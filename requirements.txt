@@ -8,3 +8,8 @@ torch==2.11.0
 
 transformers==5.5.4
 tqdm==4.67.3
+
+# Сбор корпуса: PDF → текст (2 колонки: pytesseract по половинам страницы)
+pymupdf==1.26.7
+pytesseract==0.3.13
+pillow==11.3.0

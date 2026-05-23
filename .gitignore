@@ -201,6 +201,11 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Собранный корпус (локально)
+data/raw/*.jsonl
+data/raw/pdf/
+data/raw/pdf_text/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
