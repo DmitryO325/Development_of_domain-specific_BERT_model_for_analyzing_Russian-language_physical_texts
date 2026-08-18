@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:rights:v1",
+  "title": "Построчный реестр прав и проектных допущений",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "created_at",
+    "rights_record_id",
+    "scope_type",
+    "scope_id",
+    "operation",
+    "status",
+    "access_basis",
+    "basis_type",
+    "acquisition_method",
+    "acquisition_scope",
+    "terms_url",
+    "rights_checked_at",
+    "derivative_scope",
+    "rights_conditions",
+    "rights_evidence_sha256",
+    "rights_expires_at",
+    "supersedes_rights_record_id"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "rights-v1"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "rights_record_id": {"type": "string", "minLength": 1},
+    "scope_type": {
+      "type": "string",
+      "enum": ["source_group", "source", "journal", "work", "artifact"]
+    },
+    "scope_id": {"type": "string", "minLength": 1},
+    "operation": {
+      "type": "string",
+      "enum": [
+        "acquisition",
+        "storage",
+        "evaluation",
+        "ml_training",
+        "redistribution",
+        "derivatives_release",
+        "checkpoint_release"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["allowed", "conditional", "permission_required", "prohibited", "unknown"]
+    },
+    "access_basis": {"type": "string", "minLength": 1},
+    "basis_type": {
+      "type": "string",
+      "enum": [
+        "explicit_license",
+        "written_permission",
+        "contract",
+        "statutory_exception",
+        "lawful_access_research_assumption",
+        "unknown"
+      ]
+    },
+    "acquisition_method": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": ["manual_download", "api", "crawler", "platform_export", "other"]
+        },
+        {"type": "null"}
+      ]
+    },
+    "acquisition_scope": {
+      "anyOf": [
+        {"type": "string", "enum": ["single", "sample", "bulk"]},
+        {"type": "null"}
+      ]
+    },
+    "terms_url": {
+      "anyOf": [{"type": "string", "format": "uri"}, {"type": "null"}]
+    },
+    "rights_checked_at": {"type": "string", "format": "date"},
+    "derivative_scope": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["aggregate_metrics", "identifiers", "text_fragments", "dataset"]
+          },
+          "uniqueItems": true
+        },
+        {"type": "null"}
+      ]
+    },
+    "rights_conditions": {"type": "array", "items": {"type": "string"}},
+    "rights_evidence_sha256": {
+      "anyOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "rights_expires_at": {
+      "anyOf": [{"type": "string", "format": "date"}, {"type": "null"}]
+    },
+    "supersedes_rights_record_id": {"type": ["string", "null"]}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"operation": {"const": "acquisition"}},
+        "required": ["operation"]
+      },
+      "then": {
+        "properties": {
+          "acquisition_method": {
+            "type": "string",
+            "enum": ["manual_download", "api", "crawler", "platform_export", "other"]
+          },
+          "acquisition_scope": {
+            "type": "string",
+            "enum": ["single", "sample", "bulk"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"operation": {"const": "derivatives_release"}},
+        "required": ["operation"]
+      },
+      "then": {
+        "properties": {
+          "derivative_scope": {"type": "array", "minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"status": {"const": "conditional"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "rights_conditions": {"type": "array", "minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "basis_type": {"const": "lawful_access_research_assumption"}
+        },
+        "required": ["basis_type"]
+      },
+      "then": {
+        "properties": {
+          "status": {"const": "conditional"},
+          "operation": {
+            "enum": ["acquisition", "storage", "evaluation", "ml_training"]
+          },
+          "rights_conditions": {"type": "array", "minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"basis_type": {"const": "unknown"}},
+        "required": ["basis_type"]
+      },
+      "then": {
+        "properties": {
+          "status": {"enum": ["unknown", "permission_required"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": ["redistribution", "derivatives_release", "checkpoint_release"]
+          },
+          "status": {"enum": ["allowed", "conditional"]}
+        },
+        "required": ["operation", "status"]
+      },
+      "then": {
+        "properties": {
+          "basis_type": {
+            "enum": [
+              "explicit_license",
+              "written_permission",
+              "contract",
+              "statutory_exception"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

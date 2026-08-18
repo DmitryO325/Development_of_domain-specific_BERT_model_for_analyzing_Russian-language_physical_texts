@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:h2-queries:v1",
+  "title": "Воспроизводимые запросы поиска кандидатов H2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "query_id",
+    "query_version",
+    "source_id",
+    "query_type",
+    "query_text",
+    "filters",
+    "rights_record_id",
+    "executed_at",
+    "result_count",
+    "response_sha256",
+    "code_commit"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "h2-queries-v1"},
+    "query_id": {"type": "string", "minLength": 1},
+    "query_version": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "query_type": {
+      "type": "string",
+      "enum": ["site_search", "catalog_export", "manual_index", "api", "other"]
+    },
+    "query_text": {"type": "string", "minLength": 1},
+    "filters": {"type": "object"},
+    "rights_record_id": {"type": "string", "minLength": 1},
+    "executed_at": {"type": "string", "format": "date-time"},
+    "result_count": {"type": "integer", "minimum": 0},
+    "response_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "code_commit": {"type": "string", "minLength": 7}
+  }
+}

@@ -1,0 +1,49 @@
+audit_id: h2_audit_demo_v1
+audit_frame_version: h2_frame_demo_v1
+candidate_frame_id: h2_candidates_demo_v1
+h2_scheme_version: T_v1-2026-pre1
+calibration_labeling_guide_version: h2_guide_demo_calibration_v1
+audit_labeling_guide_version: h2_guide_demo_v1
+created_at: null
+audit_run_file: manifests/h2_audit_run.json
+calibration_n: 0
+audit_n: 0
+double_annotated_n: 0
+adjudicated_n: 0
+russian_title_abstract_rate: null
+any_grnti_rate: null
+explicit_primary_grnti_rate: null
+single_label_rate: null
+without_verified_primary_grnti_n: 0
+observed_agreement: null
+cohen_kappa: null
+cohen_kappa_ci95: [null, null]
+design_weighted_kappa: null
+design_weighted_kappa_ci95: [null, null]
+annotator_grnti_kappa: {annotator_01: null, annotator_02: null}
+annotator_grnti_macro_f1: {annotator_01: null, annotator_02: null}
+annotator_grnti_per_class_f1: {annotator_01: {}, annotator_02: {}}
+expert_grnti_macro_f1: null
+expert_grnti_macro_f1_ci95: [null, null]
+expert_grnti_per_class_f1: {}
+grnti_conflict_rate: null
+grnti_conflict_rate_ci95: [null, null]
+unresolved_grnti_conflicts_n: 0
+source_only_macro_f1: null
+source_only_macro_f1_ci95: [null, null]
+journal_class_cramers_v: null
+journal_class_mutual_information: null
+journal_class_graph_connected: null
+journal_class_min_class_degree: null
+eligible_by_class: {C1: 0, C2: 0, C3: 0, C4: 0, C5: 0}
+distinct_sources_by_class: {C1: 0, C2: 0, C3: 0, C4: 0, C5: 0}
+source_ids_by_class: {C1: [], C2: [], C3: [], C4: [], C5: []}
+exclusions_by_reason: {}
+annotator_confusion_matrix_file: manifests/results/h2_annotator_confusion_matrix.csv
+expert_grnti_confusion_matrix_file: manifests/results/h2_expert_grnti_confusion_matrix.csv
+journal_class_matrix_file: manifests/results/h2_journal_class_matrix.csv
+leave_one_journal_out_results_file: manifests/results/h2_leave_one_journal_out.jsonl
+format_and_relation_checks: fail
+decision: revise
+decision_rationale: Синтетический незаполненный пример; решение не является результатом аудита.
+checksums_file: manifests/checksums.sha256

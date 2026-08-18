@@ -1,0 +1,521 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:h2-labels:v1",
+  "title": "Доказательства и решения разметки H2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "label_record_id",
+    "record_type",
+    "audit_id",
+    "audit_frame_version",
+    "candidate_frame_id",
+    "annotation_item_id",
+    "task_batch_id",
+    "input_sha256",
+    "evidence_bundle_sha256",
+    "work_id",
+    "h2_scheme_version",
+    "grnti_assignment",
+    "h2_class_id",
+    "label_provenance",
+    "label_verification_status",
+    "label_status",
+    "annotator_id",
+    "annotator_decision",
+    "confidence",
+    "labeling_guide_version",
+    "decision_rationale",
+    "adjudicator_id",
+    "adjudicated_decision",
+    "adjudication_reason",
+    "source_label_record_ids",
+    "adjudication_kind",
+    "grnti_conflict_outcome",
+    "completed_at",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "h2-labels-v1"},
+    "label_record_id": {"type": "string", "minLength": 1},
+    "record_type": {
+      "type": "string",
+      "enum": [
+        "grnti_assignment",
+        "annotation",
+        "annotation_adjudication",
+        "grnti_conflict_resolution"
+      ]
+    },
+    "audit_id": {"type": ["string", "null"]},
+    "audit_frame_version": {"type": ["string", "null"]},
+    "candidate_frame_id": {"type": ["string", "null"]},
+    "annotation_item_id": {"type": ["string", "null"]},
+    "task_batch_id": {"type": ["string", "null"]},
+    "input_sha256": {
+      "anyOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
+    },
+    "evidence_bundle_sha256": {
+      "anyOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
+    },
+    "work_id": {"type": "string", "minLength": 1},
+    "h2_scheme_version": {"type": "string", "minLength": 1},
+    "grnti_assignment": {
+      "anyOf": [
+        {"$ref": "#/$defs/grntiAssignment"},
+        {"type": "null"}
+      ]
+    },
+    "h2_class_id": {
+      "anyOf": [
+        {"$ref": "#/$defs/classId"},
+        {"type": "null"}
+      ]
+    },
+    "label_provenance": {
+      "type": "string",
+      "enum": [
+        "publisher_explicit_grnti",
+        "bibliographic_grnti",
+        "expert_adjudicated",
+        "none"
+      ]
+    },
+    "label_verification_status": {
+      "type": "string",
+      "enum": ["pending", "verified", "conflict", "rejected"]
+    },
+    "label_status": {
+      "type": "string",
+      "enum": [
+        "eligible",
+        "ambiguous_multilabel",
+        "other_class",
+        "insufficient",
+        "conflict_excluded",
+        "pending"
+      ]
+    },
+    "annotator_id": {"type": ["string", "null"]},
+    "annotator_decision": {
+      "anyOf": [
+        {"$ref": "#/$defs/decision"},
+        {"type": "null"}
+      ]
+    },
+    "confidence": {
+      "anyOf": [
+        {"type": "string", "enum": ["high", "medium", "low"]},
+        {"type": "null"}
+      ]
+    },
+    "labeling_guide_version": {"type": ["string", "null"]},
+    "decision_rationale": {"type": ["string", "null"]},
+    "adjudicator_id": {"type": ["string", "null"]},
+    "adjudicated_decision": {
+      "anyOf": [
+        {"$ref": "#/$defs/decision"},
+        {"type": "null"}
+      ]
+    },
+    "adjudication_reason": {"type": ["string", "null"]},
+    "source_label_record_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "adjudication_kind": {
+      "anyOf": [
+        {"type": "string", "enum": ["annotator_disagreement", "grnti_conflict"]},
+        {"type": "null"}
+      ]
+    },
+    "grnti_conflict_outcome": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": ["catalog_confirmed", "catalog_rejected", "unresolved_excluded"]
+        },
+        {"type": "null"}
+      ]
+    },
+    "completed_at": {
+      "anyOf": [
+        {"type": "string", "format": "date-time"},
+        {"type": "null"}
+      ]
+    },
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "classId": {
+      "type": "string",
+      "enum": ["C1", "C2", "C3", "C4", "C5"]
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "OTHER",
+        "AMBIGUOUS",
+        "INSUFFICIENT"
+      ]
+    },
+    "grntiAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "scheme_version",
+        "assignment_source_type",
+        "assignment_source_id",
+        "source_url",
+        "retrieved_at",
+        "evidence_sha256",
+        "is_primary_explicit"
+      ],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[0-9]{2}(\\.[0-9]{2}){1,2}$"},
+        "scheme_version": {"type": "string", "minLength": 1},
+        "assignment_source_type": {
+          "type": "string",
+          "enum": [
+            "publisher",
+            "bibliographic_catalog"
+          ]
+        },
+        "assignment_source_id": {"type": "string", "minLength": 1},
+        "source_url": {"type": "string", "format": "uri"},
+        "retrieved_at": {"type": "string", "format": "date-time"},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "is_primary_explicit": {"type": "boolean"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"record_type": {"const": "grnti_assignment"}},
+        "required": ["record_type"]
+      },
+      "then": {
+        "properties": {
+          "grnti_assignment": {"$ref": "#/$defs/grntiAssignment"},
+          "label_provenance": {
+            "enum": [
+              "publisher_explicit_grnti",
+              "bibliographic_grnti"
+            ]
+          },
+          "task_batch_id": {"type": "null"},
+          "input_sha256": {"type": "null"},
+          "evidence_bundle_sha256": {"type": "null"},
+          "annotator_id": {"type": "null"},
+          "annotator_decision": {"type": "null"},
+          "confidence": {"type": "null"},
+          "labeling_guide_version": {"type": "null"},
+          "decision_rationale": {"type": "null"},
+          "adjudicator_id": {"type": "null"},
+          "adjudicated_decision": {"type": "null"},
+          "adjudication_reason": {"type": "null"},
+          "source_label_record_ids": {"maxItems": 0},
+          "adjudication_kind": {"type": "null"},
+          "grnti_conflict_outcome": {"type": "null"},
+          "completed_at": {"type": "null"}
+        },
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "properties": {
+                  "grnti_assignment": {
+                    "properties": {"assignment_source_type": {"const": "publisher"}}
+                  },
+                  "label_provenance": {"const": "publisher_explicit_grnti"}
+                }
+              },
+              {
+                "properties": {
+                  "grnti_assignment": {
+                    "properties": {"assignment_source_type": {"const": "bibliographic_catalog"}}
+                  },
+                  "label_provenance": {"const": "bibliographic_grnti"}
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "properties": {
+                  "grnti_assignment": {
+                    "properties": {"code": {"pattern": "^29\\.05($|\\.)"}}
+                  },
+                  "h2_class_id": {"const": "C1"}
+                }
+              },
+              {
+                "properties": {
+                  "grnti_assignment": {
+                    "properties": {"code": {"pattern": "^29\\.15($|\\.)"}}
+                  },
+                  "h2_class_id": {"const": "C2"}
+                }
+              },
+              {
+                "properties": {
+                  "grnti_assignment": {
+                    "properties": {"code": {"pattern": "^29\\.19($|\\.)"}}
+                  },
+                  "h2_class_id": {"const": "C3"}
+                }
+              },
+              {
+                "properties": {
+                  "grnti_assignment": {
+                    "properties": {"code": {"pattern": "^29\\.27($|\\.)"}}
+                  },
+                  "h2_class_id": {"const": "C4"}
+                }
+              },
+              {
+                "properties": {
+                  "grnti_assignment": {
+                    "properties": {"code": {"pattern": "^29\\.33($|\\.)"}}
+                  },
+                  "h2_class_id": {"const": "C5"}
+                }
+              },
+              {
+                "properties": {
+                  "grnti_assignment": {
+                    "properties": {
+                      "code": {"not": {"pattern": "^29\\.(05|15|19|27|33)($|\\.)"}}
+                    }
+                  },
+                  "h2_class_id": {"type": "null"}
+                }
+              }
+            ]
+          },
+          {
+            "if": {
+              "properties": {"label_status": {"const": "eligible"}},
+              "required": ["label_status"]
+            },
+            "then": {
+              "properties": {
+                "label_verification_status": {"const": "verified"},
+                "h2_class_id": {"$ref": "#/$defs/classId"},
+                "grnti_assignment": {
+                  "properties": {"is_primary_explicit": {"const": true}}
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {"record_type": {"const": "annotation"}},
+        "required": ["record_type"]
+      },
+      "then": {
+        "properties": {
+          "audit_id": {"type": "string", "minLength": 1},
+          "audit_frame_version": {"type": "string", "minLength": 1},
+          "candidate_frame_id": {"type": "string", "minLength": 1},
+          "annotation_item_id": {"type": "string", "minLength": 1},
+          "task_batch_id": {"type": "string", "minLength": 1},
+          "input_sha256": {"$ref": "#/$defs/sha256"},
+          "evidence_bundle_sha256": {"type": "null"},
+          "grnti_assignment": {"type": "null"},
+          "h2_class_id": {"type": "null"},
+          "label_provenance": {"const": "none"},
+          "label_verification_status": {"const": "pending"},
+          "label_status": {"const": "pending"},
+          "annotator_id": {"type": "string", "minLength": 1},
+          "annotator_decision": {"$ref": "#/$defs/decision"},
+          "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+          "labeling_guide_version": {"type": "string", "minLength": 1},
+          "decision_rationale": {"type": "string", "minLength": 1},
+          "adjudicator_id": {"type": "null"},
+          "adjudicated_decision": {"type": "null"},
+          "adjudication_reason": {"type": "null"},
+          "source_label_record_ids": {"maxItems": 0},
+          "adjudication_kind": {"type": "null"},
+          "grnti_conflict_outcome": {"type": "null"},
+          "completed_at": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"record_type": {"const": "annotation_adjudication"}},
+        "required": ["record_type"]
+      },
+      "then": {
+        "properties": {
+          "audit_id": {"type": "string", "minLength": 1},
+          "audit_frame_version": {"type": "string", "minLength": 1},
+          "candidate_frame_id": {"type": "string", "minLength": 1},
+          "annotation_item_id": {"type": "string", "minLength": 1},
+          "task_batch_id": {"type": "string", "minLength": 1},
+          "input_sha256": {"$ref": "#/$defs/sha256"},
+          "evidence_bundle_sha256": {"type": "null"},
+          "grnti_assignment": {"type": "null"},
+          "label_provenance": {"const": "expert_adjudicated"},
+          "label_verification_status": {"const": "verified"},
+          "annotator_id": {"type": "null"},
+          "annotator_decision": {"type": "null"},
+          "confidence": {"type": "null"},
+          "labeling_guide_version": {"type": "string", "minLength": 1},
+          "decision_rationale": {"type": "null"},
+          "adjudicator_id": {"type": "string", "minLength": 1},
+          "adjudicated_decision": {"$ref": "#/$defs/decision"},
+          "adjudication_reason": {"type": "string", "minLength": 1},
+          "source_label_record_ids": {"minItems": 2, "maxItems": 2},
+          "adjudication_kind": {
+            "const": "annotator_disagreement"
+          },
+          "grnti_conflict_outcome": {"type": "null"},
+          "completed_at": {"type": "string", "format": "date-time"}
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "adjudicated_decision": {"const": "C1"},
+              "h2_class_id": {"const": "C1"},
+              "label_status": {"const": "eligible"}
+            }
+          },
+          {
+            "properties": {
+              "adjudicated_decision": {"const": "C2"},
+              "h2_class_id": {"const": "C2"},
+              "label_status": {"const": "eligible"}
+            }
+          },
+          {
+            "properties": {
+              "adjudicated_decision": {"const": "C3"},
+              "h2_class_id": {"const": "C3"},
+              "label_status": {"const": "eligible"}
+            }
+          },
+          {
+            "properties": {
+              "adjudicated_decision": {"const": "C4"},
+              "h2_class_id": {"const": "C4"},
+              "label_status": {"const": "eligible"}
+            }
+          },
+          {
+            "properties": {
+              "adjudicated_decision": {"const": "C5"},
+              "h2_class_id": {"const": "C5"},
+              "label_status": {"const": "eligible"}
+            }
+          },
+          {
+            "properties": {
+              "adjudicated_decision": {"const": "OTHER"},
+              "h2_class_id": {"type": "null"},
+              "label_status": {"const": "other_class"}
+            }
+          },
+          {
+            "properties": {
+              "adjudicated_decision": {"const": "AMBIGUOUS"},
+              "h2_class_id": {"type": "null"},
+              "label_status": {"const": "ambiguous_multilabel"}
+            }
+          },
+          {
+            "properties": {
+              "adjudicated_decision": {"const": "INSUFFICIENT"},
+              "h2_class_id": {"type": "null"},
+              "label_status": {"const": "insufficient"}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {"record_type": {"const": "grnti_conflict_resolution"}},
+        "required": ["record_type"]
+      },
+      "then": {
+        "properties": {
+          "audit_id": {"type": "string", "minLength": 1},
+          "audit_frame_version": {"type": "string", "minLength": 1},
+          "candidate_frame_id": {"type": "string", "minLength": 1},
+          "annotation_item_id": {"type": "string", "minLength": 1},
+          "task_batch_id": {"type": "string", "minLength": 1},
+          "input_sha256": {"$ref": "#/$defs/sha256"},
+          "evidence_bundle_sha256": {"$ref": "#/$defs/sha256"},
+          "grnti_assignment": {"type": "null"},
+          "label_provenance": {"const": "none"},
+          "annotator_id": {"type": "null"},
+          "annotator_decision": {"type": "null"},
+          "confidence": {"type": "null"},
+          "labeling_guide_version": {"type": "string", "minLength": 1},
+          "decision_rationale": {"type": "null"},
+          "adjudicator_id": {"type": "string", "minLength": 1},
+          "adjudicated_decision": {"type": "null"},
+          "adjudication_reason": {"type": "string", "minLength": 1},
+          "source_label_record_ids": {"minItems": 3},
+          "adjudication_kind": {"const": "grnti_conflict"},
+          "grnti_conflict_outcome": {
+            "type": "string",
+            "enum": ["catalog_confirmed", "catalog_rejected", "unresolved_excluded"]
+          },
+          "completed_at": {"type": "string", "format": "date-time"}
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "grnti_conflict_outcome": {"const": "catalog_confirmed"},
+              "h2_class_id": {"$ref": "#/$defs/classId"},
+              "label_verification_status": {"const": "verified"},
+              "label_status": {"const": "eligible"}
+            }
+          },
+          {
+            "properties": {
+              "grnti_conflict_outcome": {"const": "catalog_rejected"},
+              "h2_class_id": {"type": "null"},
+              "label_verification_status": {"const": "rejected"},
+              "label_status": {"const": "conflict_excluded"}
+            }
+          },
+          {
+            "properties": {
+              "grnti_conflict_outcome": {"const": "unresolved_excluded"},
+              "h2_class_id": {"type": "null"},
+              "label_verification_status": {"const": "conflict"},
+              "label_status": {"const": "conflict_excluded"}
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

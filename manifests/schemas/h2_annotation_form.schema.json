@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:h2-annotation-form:v1",
+  "title": "Обезличенный бланк разметчика H2",
+  "description": "В бланке намеренно отсутствуют work_id, DOI, журнал, источник и коды.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_batch_id",
+    "audit_id",
+    "audit_frame_version",
+    "candidate_frame_id",
+    "annotation_item_id",
+    "h2_scheme_version",
+    "blinded_title",
+    "blinded_abstract",
+    "labeling_guide_version",
+    "input_sha256",
+    "annotator_id",
+    "annotator_decision",
+    "confidence",
+    "decision_rationale",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "h2-annotation-form-v1"},
+    "task_batch_id": {"type": "string", "minLength": 1},
+    "audit_id": {"type": "string", "minLength": 1},
+    "audit_frame_version": {"type": "string", "minLength": 1},
+    "candidate_frame_id": {"type": "string", "minLength": 1},
+    "annotation_item_id": {"type": "string", "minLength": 1},
+    "h2_scheme_version": {"type": "string", "minLength": 1},
+    "blinded_title": {"type": "string", "minLength": 1},
+    "blinded_abstract": {"type": ["string", "null"]},
+    "labeling_guide_version": {"type": "string", "minLength": 1},
+    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "annotator_id": {"type": "string", "minLength": 1},
+    "annotator_decision": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "C1",
+            "C2",
+            "C3",
+            "C4",
+            "C5",
+            "OTHER",
+            "AMBIGUOUS",
+            "INSUFFICIENT"
+          ]
+        },
+        {"type": "null"}
+      ]
+    },
+    "confidence": {
+      "anyOf": [
+        {"type": "string", "enum": ["high", "medium", "low"]},
+        {"type": "null"}
+      ]
+    },
+    "decision_rationale": {"type": ["string", "null"]},
+    "completed_at": {
+      "anyOf": [
+        {"type": "string", "format": "date-time"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"annotator_decision": {"type": "string"}},
+        "required": ["annotator_decision"]
+      },
+      "then": {
+        "properties": {
+          "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+          "decision_rationale": {"type": "string", "minLength": 1},
+          "completed_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "else": {
+        "properties": {
+          "confidence": {"type": "null"},
+          "decision_rationale": {"type": "null"},
+          "completed_at": {"type": "null"}
+        }
+      }
+    }
+  ]
+}

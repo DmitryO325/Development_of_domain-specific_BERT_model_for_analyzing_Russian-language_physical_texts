@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:h2-audit-frame:v1",
+  "title": "Кадр кандидатов и отбор для аудита H2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "frame_record_id",
+    "audit_frame_version",
+    "audit_id",
+    "candidate_frame_id",
+    "annotation_item_id",
+    "work_id",
+    "candidate_class_id",
+    "search_basis",
+    "query_refs",
+    "stratum_id",
+    "stratum_assignment_rule",
+    "stratum_population_size",
+    "inclusion_probability",
+    "selection_seed",
+    "selection_role",
+    "seen_by_annotators",
+    "allowed_classification_splits",
+    "created_at",
+    "source_manifest_sha256"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "h2-audit-frame-v1"},
+    "frame_record_id": {"type": "string", "minLength": 1},
+    "audit_frame_version": {"type": "string", "minLength": 1},
+    "audit_id": {"type": "string", "minLength": 1},
+    "candidate_frame_id": {"type": "string", "minLength": 1},
+    "annotation_item_id": {"type": ["string", "null"]},
+    "work_id": {"type": "string", "minLength": 1},
+    "candidate_class_id": {
+      "type": "string",
+      "enum": ["C1", "C2", "C3", "C4", "C5", "BOUNDARY", "OTHER"]
+    },
+    "search_basis": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": [
+          "publisher_grnti",
+          "bibliographic_grnti",
+          "pacs",
+          "udc",
+          "publisher_section",
+          "keywords",
+          "title_terms",
+          "manual_boundary",
+          "incomplete_metadata",
+          "synthetic_example",
+          "other"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "query_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/queryRef"},
+      "uniqueItems": true
+    },
+    "stratum_id": {"type": "string", "minLength": 1},
+    "stratum_assignment_rule": {"type": "string", "minLength": 1},
+    "stratum_population_size": {"type": "integer", "minimum": 1},
+    "inclusion_probability": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 1
+    },
+    "selection_seed": {"type": "integer", "minimum": 0},
+    "selection_role": {
+      "type": "string",
+      "enum": ["not_selected", "calibration", "audit"]
+    },
+    "seen_by_annotators": {"type": "boolean"},
+    "allowed_classification_splits": {
+      "type": "array",
+      "items": {"type": "string", "const": "train"},
+      "uniqueItems": true,
+      "maxItems": 1
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "source_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "queryRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query_id", "query_version"],
+      "properties": {
+        "query_id": {"type": "string", "minLength": 1},
+        "query_version": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"selection_role": {"const": "not_selected"}},
+        "required": ["selection_role"]
+      },
+      "then": {
+        "properties": {
+          "annotation_item_id": {"type": "null"},
+          "seen_by_annotators": {"const": false},
+          "allowed_classification_splits": {"maxItems": 0}
+        }
+      },
+      "else": {
+        "properties": {
+          "audit_id": {"type": "string", "minLength": 1},
+          "annotation_item_id": {"type": "string", "minLength": 1},
+          "seen_by_annotators": {"const": true},
+          "allowed_classification_splits": {
+            "type": "array",
+            "prefixItems": [{"const": "train"}],
+            "minItems": 1,
+            "maxItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

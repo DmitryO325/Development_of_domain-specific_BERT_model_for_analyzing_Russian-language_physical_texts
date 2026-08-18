@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:artifacts:v1",
+  "title": "Реестр артефактов корпуса ruPhysBERT",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "created_at",
+    "artifact_record_id",
+    "artifact_id",
+    "work_id",
+    "parent_artifact_id",
+    "retrievals",
+    "rights_record_ids",
+    "content_role",
+    "representation",
+    "mime_type",
+    "path",
+    "sha256",
+    "bytes",
+    "extraction_method",
+    "extraction_version",
+    "ocr_method",
+    "ocr_version",
+    "preprocessing_version",
+    "tokenizer_repo",
+    "tokenizer_revision",
+    "characters",
+    "words",
+    "subtokens",
+    "h2_input_sha256",
+    "label_leakage_audit_version",
+    "label_leakage_audit_status",
+    "acquisition_status",
+    "extraction_status",
+    "qa_status",
+    "processing_status",
+    "error_code",
+    "error_detail",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "artifacts-v1"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "artifact_record_id": {"type": "string", "minLength": 1},
+    "artifact_id": {
+      "anyOf": [
+        {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "work_id": {"type": "string", "minLength": 1},
+    "parent_artifact_id": {"type": ["string", "null"]},
+    "retrievals": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/retrieval"}
+    },
+    "rights_record_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "content_role": {
+      "type": "string",
+      "enum": ["full_text", "title_abstract", "metadata_only", "formula_context"]
+    },
+    "representation": {
+      "type": "string",
+      "enum": ["pdf", "html", "xml", "json", "rss", "plain_text", "ocr_text"]
+    },
+    "mime_type": {"type": ["string", "null"]},
+    "path": {"type": ["string", "null"]},
+    "sha256": {
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "bytes": {"type": ["integer", "null"], "minimum": 0},
+    "extraction_method": {"type": ["string", "null"]},
+    "extraction_version": {"type": ["string", "null"]},
+    "ocr_method": {"type": ["string", "null"]},
+    "ocr_version": {"type": ["string", "null"]},
+    "preprocessing_version": {"type": ["string", "null"]},
+    "tokenizer_repo": {"type": ["string", "null"]},
+    "tokenizer_revision": {"type": ["string", "null"]},
+    "characters": {"type": ["integer", "null"], "minimum": 0},
+    "words": {"type": ["integer", "null"], "minimum": 0},
+    "subtokens": {"type": ["integer", "null"], "minimum": 0},
+    "h2_input_sha256": {
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "label_leakage_audit_version": {"type": ["string", "null"]},
+    "label_leakage_audit_status": {
+      "type": "string",
+      "enum": ["not_checked", "passed", "failed"]
+    },
+    "acquisition_status": {
+      "type": "string",
+      "enum": ["discovered", "rights_blocked", "ready", "retrieved", "failed"]
+    },
+    "extraction_status": {
+      "type": "string",
+      "enum": ["not_started", "running", "succeeded", "failed"]
+    },
+    "qa_status": {
+      "type": "string",
+      "enum": ["not_evaluated", "passed", "quarantined", "failed"]
+    },
+    "processing_status": {
+      "type": "string",
+      "enum": ["not_started", "processed", "eligible", "rejected"]
+    },
+    "error_code": {"type": ["string", "null"]},
+    "error_detail": {"type": ["string", "null"]},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "retrieval_id",
+        "retrieved_url",
+        "retrieved_at",
+        "response_metadata_sha256"
+      ],
+      "properties": {
+        "retrieval_id": {"type": "string", "minLength": 1},
+        "retrieved_url": {"type": "string", "format": "uri"},
+        "retrieved_at": {"type": "string", "format": "date-time"},
+        "response_metadata_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"acquisition_status": {"const": "retrieved"}},
+        "required": ["acquisition_status"]
+      },
+      "then": {
+        "properties": {
+          "artifact_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "sha256": {"$ref": "#/$defs/sha256"}
+        }
+      },
+      "else": {
+        "properties": {
+          "artifact_id": {"type": "null"},
+          "sha256": {"type": "null"},
+          "path": {"type": "null"},
+          "bytes": {"type": "null"},
+          "h2_input_sha256": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"processing_status": {"const": "eligible"}},
+        "required": ["processing_status"]
+      },
+      "then": {
+        "properties": {
+          "retrievals": {"minItems": 1},
+          "rights_record_ids": {"minItems": 1},
+          "artifact_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "path": {"type": "string", "minLength": 1},
+          "bytes": {"type": "integer", "minimum": 0},
+          "acquisition_status": {"const": "retrieved"},
+          "extraction_status": {"const": "succeeded"},
+          "qa_status": {"const": "passed"},
+          "error_code": {"type": "null"},
+          "error_detail": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "content_role": {"const": "title_abstract"},
+          "processing_status": {"const": "eligible"}
+        },
+        "required": ["content_role", "processing_status"]
+      },
+      "then": {
+        "properties": {
+          "h2_input_sha256": {"$ref": "#/$defs/sha256"},
+          "label_leakage_audit_version": {"type": "string", "minLength": 1},
+          "label_leakage_audit_status": {"const": "passed"}
+        }
+      }
+    }
+  ]
+}
