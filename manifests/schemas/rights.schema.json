@@ -20,6 +20,8 @@
     "rights_checked_at",
     "derivative_scope",
     "rights_conditions",
+    "conditions_satisfied_at",
+    "conditions_evidence_sha256",
     "rights_evidence_sha256",
     "rights_expires_at",
     "supersedes_rights_record_id"
@@ -94,6 +96,15 @@
       ]
     },
     "rights_conditions": {"type": "array", "items": {"type": "string"}},
+    "conditions_satisfied_at": {
+      "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
+    },
+    "conditions_evidence_sha256": {
+      "anyOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
     "rights_evidence_sha256": {
       "anyOf": [
         {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -106,6 +117,23 @@
     "supersedes_rights_record_id": {"type": ["string", "null"]}
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {"acquisition_method": {"type": "null"}},
+        "required": ["acquisition_method"]
+      },
+      "then": {
+        "properties": {"acquisition_scope": {"type": "null"}}
+      },
+      "else": {
+        "properties": {
+          "acquisition_scope": {
+            "type": "string",
+            "enum": ["single", "sample", "bulk"]
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {"operation": {"const": "acquisition"}},
@@ -144,6 +172,33 @@
         "properties": {
           "rights_conditions": {"type": "array", "minItems": 1}
         }
+      },
+      "else": {
+        "properties": {
+          "conditions_satisfied_at": {"type": "null"},
+          "conditions_evidence_sha256": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "conditions_satisfied_at": {"type": "string"}
+        },
+        "required": ["conditions_satisfied_at"]
+      },
+      "then": {
+        "properties": {
+          "conditions_evidence_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "conditions_evidence_sha256": {"type": "null"}
+        }
       }
     },
     {
@@ -160,6 +215,22 @@
             "enum": ["acquisition", "storage", "evaluation", "ml_training"]
           },
           "rights_conditions": {"type": "array", "minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {"enum": ["allowed", "conditional"]}
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "rights_evidence_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
         }
       }
     },

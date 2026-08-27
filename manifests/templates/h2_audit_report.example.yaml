@@ -1,4 +1,5 @@
 audit_id: h2_audit_demo_v1
+run_phase: audit_prepared
 audit_frame_version: h2_frame_demo_v1
 candidate_frame_id: h2_candidates_demo_v1
 h2_scheme_version: T_v1-2026-pre1

@@ -13,3 +13,6 @@ tqdm==4.67.3
 pymupdf==1.26.7
 pytesseract==0.3.13
 pillow==11.3.0
+
+# Проверка машинных реестров корпуса по JSON Schema Draft 2020-12
+jsonschema==4.26.0

@@ -1,7 +1,7 @@
-"""Сбор текстов с сайтов физических журналов."""
+"""Общие средства и сборщики текстов физических журналов."""
 
 from .base import Document, append_jsonl, fetch_html
-from .ufn import UfnScraper
 from .rss_feed import RssScraper
+from .ufn import UfnScraper
 
-__all__ = ["Document", "append_jsonl", "fetch_html", "UfnScraper", "RssScraper"]
+__all__ = ["Document", "RssScraper", "UfnScraper", "append_jsonl", "fetch_html"]

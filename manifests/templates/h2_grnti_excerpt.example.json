@@ -1,0 +1,77 @@
+{
+  "schema_version": "h2-grnti-excerpt-v1",
+  "excerpt_version": "grnti_excerpt_demo_v1",
+  "status": "draft",
+  "grnti_scheme_version": "GRNTI-2025",
+  "created_at": "2026-08-27T15:00:00+03:00",
+  "source": {
+    "publisher": "Синтетический издатель",
+    "title": "Синтетический пример структуры рубрикатора",
+    "source_url": "https://example.invalid/grnti-demo.pdf",
+    "retrieved_at": "2026-08-27T14:55:00+03:00",
+    "local_path": "data/raw/references/grnti_demo_source.pdf",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "bytes": 12345,
+    "page_count": 60
+  },
+  "selected_branches": [
+    {
+      "class_id": "C1",
+      "level2_code": "29.05",
+      "level2_title": "Физика элементарных частиц. Теория полей. Физика высоких энергий",
+      "source_locators": [{"pdf_page_number": 55, "printed_page_label": "55"}],
+      "cross_references": [],
+      "subrubrics": [{"code": "29.05.01", "title": "Синтетическая подрубрика C1", "source_locators": [{"pdf_page_number": 55, "printed_page_label": "55"}], "cross_references": []}]
+    },
+    {
+      "class_id": "C2",
+      "level2_code": "29.15",
+      "level2_title": "Ядерная физика",
+      "source_locators": [{"pdf_page_number": 55, "printed_page_label": "55"}],
+      "cross_references": [],
+      "subrubrics": [{"code": "29.15.01", "title": "Синтетическая подрубрика C2", "source_locators": [{"pdf_page_number": 55, "printed_page_label": "55"}], "cross_references": []}]
+    },
+    {
+      "class_id": "C3",
+      "level2_code": "29.19",
+      "level2_title": "Физика твердых тел",
+      "source_locators": [{"pdf_page_number": 56, "printed_page_label": "56"}],
+      "cross_references": [],
+      "subrubrics": [{"code": "29.19.01", "title": "Синтетическая подрубрика C3", "source_locators": [{"pdf_page_number": 56, "printed_page_label": "56"}], "cross_references": []}]
+    },
+    {
+      "class_id": "C4",
+      "level2_code": "29.27",
+      "level2_title": "Физика плазмы",
+      "source_locators": [{"pdf_page_number": 56, "printed_page_label": "56"}],
+      "cross_references": [],
+      "subrubrics": [{"code": "29.27.01", "title": "Синтетическая подрубрика C4", "source_locators": [{"pdf_page_number": 56, "printed_page_label": "56"}], "cross_references": []}]
+    },
+    {
+      "class_id": "C5",
+      "level2_code": "29.33",
+      "level2_title": "Лазерная физика",
+      "source_locators": [{"pdf_page_number": 57, "printed_page_label": "57"}],
+      "cross_references": [],
+      "subrubrics": [{"code": "29.33.01", "title": "Синтетическая подрубрика C5", "source_locators": [{"pdf_page_number": 57, "printed_page_label": "57"}], "cross_references": []}]
+    }
+  ],
+  "boundary_branches": [
+    {
+      "code": "29.32",
+      "title": "Фотоника",
+      "reason": "Отдельная синтетическая граница с C5, не являющаяся меткой C5.",
+      "source_locators": [{"pdf_page_number": 57, "printed_page_label": "57"}],
+      "cross_references": []
+    }
+  ],
+  "completeness_check": {
+    "expected_class_ids": ["C1", "C2", "C3", "C4", "C5"],
+    "expected_level2_codes": ["29.05", "29.15", "29.19", "29.27", "29.33"],
+    "all_level3_copied": false,
+    "all_cross_references_copied": false,
+    "verified_by": null,
+    "verified_at": null,
+    "freeze_ready": false
+  }
+}

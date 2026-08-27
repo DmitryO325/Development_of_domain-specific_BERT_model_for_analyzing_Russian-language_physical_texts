@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:ruphysbert:schema:h2-audit-run:v1",
+  "$id": "urn:ruphysbert:schema:h2-audit-run:v2",
   "title": "Паспорт запуска калибровки или аудита H2",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "run_phase",
     "audit_id",
     "audit_frame_version",
     "candidate_frame_id",
@@ -23,7 +24,10 @@
     "adjudicator_id",
     "code_commit",
     "grnti_reference_path",
+    "grnti_reference_url",
+    "grnti_reference_retrieved_at",
     "grnti_reference_sha256",
+    "grnti_reference_bytes",
     "grnti_excerpt_path",
     "grnti_excerpt_sha256",
     "calibration_labeling_guide_path",
@@ -32,22 +36,39 @@
     "audit_labeling_guide_sha256",
     "decision_tree_path",
     "decision_tree_sha256",
+    "calibration_plan_path",
+    "calibration_plan_sha256",
     "query_manifest_path",
     "query_manifest_sha256",
     "preprocessing_rules_path",
     "preprocessing_rules_sha256",
     "source_candidate_manifest_path",
     "source_candidate_manifest_sha256",
+    "previous_run_path",
+    "previous_run_sha256",
+    "calibration_inputs_checksum_path",
+    "calibration_inputs_checksum_sha256",
+    "calibration_result_path",
+    "calibration_result_sha256",
+    "audit_inputs_checksum_path",
+    "audit_inputs_checksum_sha256",
     "created_at"
   ],
   "properties": {
-    "schema_version": {"type": "string", "const": "h2-audit-run-v1"},
+    "schema_version": {"type": "string", "const": "h2-audit-run-v2"},
+    "run_phase": {
+      "type": "string",
+      "enum": ["calibration_prepared", "audit_prepared"]
+    },
     "audit_id": {"type": "string", "minLength": 1},
     "audit_frame_version": {"type": "string", "minLength": 1},
     "candidate_frame_id": {"type": "string", "minLength": 1},
     "h2_scheme_version": {"type": "string", "minLength": 1},
     "calibration_labeling_guide_version": {"type": "string", "minLength": 1},
-    "audit_labeling_guide_version": {"type": "string", "minLength": 1},
+    "audit_labeling_guide_version": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
     "grnti_scheme_version": {"type": "string", "minLength": 1},
     "query_version": {"type": "string", "minLength": 1},
     "preprocessing_version": {"type": "string", "minLength": 1},
@@ -71,21 +92,42 @@
     "adjudicator_id": {"type": "string", "minLength": 1},
     "code_commit": {"type": "string", "minLength": 7},
     "grnti_reference_path": {"type": "string", "minLength": 1},
+    "grnti_reference_url": {"type": "string", "format": "uri"},
+    "grnti_reference_retrieved_at": {"type": "string", "format": "date-time"},
     "grnti_reference_sha256": {"$ref": "#/$defs/sha256"},
+    "grnti_reference_bytes": {"type": "integer", "minimum": 1},
     "grnti_excerpt_path": {"type": "string", "minLength": 1},
     "grnti_excerpt_sha256": {"$ref": "#/$defs/sha256"},
     "calibration_labeling_guide_path": {"type": "string", "minLength": 1},
     "calibration_labeling_guide_sha256": {"$ref": "#/$defs/sha256"},
-    "audit_labeling_guide_path": {"type": "string", "minLength": 1},
-    "audit_labeling_guide_sha256": {"$ref": "#/$defs/sha256"},
+    "audit_labeling_guide_path": {"type": ["string", "null"], "minLength": 1},
+    "audit_labeling_guide_sha256": {
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
     "decision_tree_path": {"type": "string", "minLength": 1},
     "decision_tree_sha256": {"$ref": "#/$defs/sha256"},
+    "calibration_plan_path": {"type": "string", "minLength": 1},
+    "calibration_plan_sha256": {"$ref": "#/$defs/sha256"},
     "query_manifest_path": {"type": "string", "minLength": 1},
     "query_manifest_sha256": {"$ref": "#/$defs/sha256"},
     "preprocessing_rules_path": {"type": "string", "minLength": 1},
     "preprocessing_rules_sha256": {"$ref": "#/$defs/sha256"},
     "source_candidate_manifest_path": {"type": "string", "minLength": 1},
     "source_candidate_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "previous_run_path": {"type": ["string", "null"], "minLength": 1},
+    "previous_run_sha256": {
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "calibration_inputs_checksum_path": {"type": "string", "minLength": 1},
+    "calibration_inputs_checksum_sha256": {"$ref": "#/$defs/sha256"},
+    "calibration_result_path": {"type": ["string", "null"], "minLength": 1},
+    "calibration_result_sha256": {
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "audit_inputs_checksum_path": {"type": ["string", "null"], "minLength": 1},
+    "audit_inputs_checksum_sha256": {
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
     "created_at": {"type": "string", "format": "date-time"}
   },
   "$defs": {
@@ -93,5 +135,39 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"run_phase": {"const": "calibration_prepared"}},
+        "required": ["run_phase"]
+      },
+      "then": {
+        "properties": {
+          "audit_labeling_guide_version": {"type": "null"},
+          "audit_labeling_guide_path": {"type": "null"},
+          "audit_labeling_guide_sha256": {"type": "null"},
+          "previous_run_path": {"type": "null"},
+          "previous_run_sha256": {"type": "null"},
+          "calibration_result_path": {"type": "null"},
+          "calibration_result_sha256": {"type": "null"},
+          "audit_inputs_checksum_path": {"type": "null"},
+          "audit_inputs_checksum_sha256": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "audit_labeling_guide_version": {"type": "string", "minLength": 1},
+          "audit_labeling_guide_path": {"type": "string", "minLength": 1},
+          "audit_labeling_guide_sha256": {"$ref": "#/$defs/sha256"},
+          "previous_run_path": {"type": "string", "minLength": 1},
+          "previous_run_sha256": {"$ref": "#/$defs/sha256"},
+          "calibration_result_path": {"type": "string", "minLength": 1},
+          "calibration_result_sha256": {"$ref": "#/$defs/sha256"},
+          "audit_inputs_checksum_path": {"type": "string", "minLength": 1},
+          "audit_inputs_checksum_sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    }
+  ]
 }

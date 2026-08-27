@@ -1,0 +1,37 @@
+{
+  "schema_version": "h2-calibration-summary-v1",
+  "summary_version": "h2_calibration_summary_demo_v1",
+  "audit_id": "h2_audit_demo_v1",
+  "calibration_run_path": "manifests/h2_calibration_run.json",
+  "calibration_run_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "calibration_inputs_checksum_path": "manifests/calibration_inputs.sha256",
+  "calibration_inputs_checksum_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "calibration_frame_version": "h2_calibration_frame_demo_v1",
+  "h2_scheme_version": "T_v1-2026-pre1",
+  "calibration_labeling_guide_version": "h2_guide_demo_calibration_v1",
+  "labels_path": "manifests/h2_calibration_labels.jsonl",
+  "labels_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "calibration_n": 30,
+  "double_annotated_n": 30,
+  "disagreements_n": 6,
+  "adjudicated_n": 6,
+  "observed_agreement": 0.8,
+  "cohen_kappa": 0.76,
+  "decision_counts": [
+    {"annotator_id": "annotator_01", "counts": {"C1": 4, "C2": 4, "C3": 4, "C4": 4, "C5": 4, "OTHER": 4, "AMBIGUOUS": 3, "INSUFFICIENT": 3}},
+    {"annotator_id": "annotator_02", "counts": {"C1": 4, "C2": 4, "C3": 4, "C4": 3, "C5": 5, "OTHER": 4, "AMBIGUOUS": 3, "INSUFFICIENT": 3}}
+  ],
+  "rule_changes": [
+    {
+      "rule_id": "demo_boundary_c4_c5",
+      "change_summary": "Синтетическое уточнение границы C4/C5.",
+      "rationale": "Вымышленное разногласие используется только для демонстрации формата.",
+      "affected_decisions": ["C4", "C5"]
+    }
+  ],
+  "unresolved_issues": [],
+  "next_audit_labeling_guide_version": "h2_guide_demo_v1",
+  "format_and_relation_checks": "pass",
+  "recommendation": "proceed_to_audit",
+  "created_at": "2026-08-28T11:30:00+03:00"
+}

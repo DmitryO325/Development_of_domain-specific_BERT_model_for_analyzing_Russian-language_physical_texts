@@ -32,6 +32,8 @@
     "h2_input_sha256",
     "label_leakage_audit_version",
     "label_leakage_audit_status",
+    "acquisition_method",
+    "acquisition_scope",
     "acquisition_status",
     "extraction_status",
     "qa_status",
@@ -93,6 +95,21 @@
       "type": "string",
       "enum": ["not_checked", "passed", "failed"]
     },
+    "acquisition_method": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": ["manual_download", "api", "crawler", "platform_export", "other"]
+        },
+        {"type": "null"}
+      ]
+    },
+    "acquisition_scope": {
+      "anyOf": [
+        {"type": "string", "enum": ["single", "sample", "bulk"]},
+        {"type": "null"}
+      ]
+    },
     "acquisition_status": {
       "type": "string",
       "enum": ["discovered", "rights_blocked", "ready", "retrieved", "failed"]
@@ -136,6 +153,32 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "acquisition_status": {"enum": ["rights_blocked", "ready", "retrieved"]}
+        },
+        "required": ["acquisition_status"]
+      },
+      "then": {
+        "properties": {
+          "acquisition_method": {
+            "type": "string",
+            "enum": ["manual_download", "api", "crawler", "platform_export", "other"]
+          },
+          "acquisition_scope": {
+            "type": "string",
+            "enum": ["single", "sample", "bulk"]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "acquisition_method": {"type": "null"},
+          "acquisition_scope": {"type": "null"}
+        }
+      }
+    },
     {
       "if": {
         "properties": {"acquisition_status": {"const": "retrieved"}},

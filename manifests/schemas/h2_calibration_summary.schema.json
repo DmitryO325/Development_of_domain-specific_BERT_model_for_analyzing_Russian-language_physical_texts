@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:h2-calibration-summary:v1",
+  "title": "Сводка калибровки разметчиков H2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "summary_version",
+    "audit_id",
+    "calibration_run_path",
+    "calibration_run_sha256",
+    "calibration_inputs_checksum_path",
+    "calibration_inputs_checksum_sha256",
+    "calibration_frame_version",
+    "h2_scheme_version",
+    "calibration_labeling_guide_version",
+    "labels_path",
+    "labels_sha256",
+    "calibration_n",
+    "double_annotated_n",
+    "disagreements_n",
+    "adjudicated_n",
+    "observed_agreement",
+    "cohen_kappa",
+    "decision_counts",
+    "rule_changes",
+    "unresolved_issues",
+    "next_audit_labeling_guide_version",
+    "format_and_relation_checks",
+    "recommendation",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "h2-calibration-summary-v1"},
+    "summary_version": {"type": "string", "minLength": 1},
+    "audit_id": {"type": "string", "minLength": 1},
+    "calibration_run_path": {"type": "string", "minLength": 1},
+    "calibration_run_sha256": {"$ref": "#/$defs/sha256"},
+    "calibration_inputs_checksum_path": {"type": "string", "minLength": 1},
+    "calibration_inputs_checksum_sha256": {"$ref": "#/$defs/sha256"},
+    "calibration_frame_version": {"type": "string", "minLength": 1},
+    "h2_scheme_version": {"type": "string", "minLength": 1},
+    "calibration_labeling_guide_version": {"type": "string", "minLength": 1},
+    "labels_path": {"type": "string", "minLength": 1},
+    "labels_sha256": {"$ref": "#/$defs/sha256"},
+    "calibration_n": {"type": "integer", "const": 30},
+    "double_annotated_n": {"type": "integer", "const": 30},
+    "disagreements_n": {"type": "integer", "minimum": 0, "maximum": 30},
+    "adjudicated_n": {"type": "integer", "minimum": 0, "maximum": 30},
+    "observed_agreement": {"type": "number", "minimum": 0, "maximum": 1},
+    "cohen_kappa": {"type": "number", "minimum": -1, "maximum": 1},
+    "decision_counts": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/annotatorDecisionCounts"}
+    },
+    "rule_changes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/ruleChange"}
+    },
+    "unresolved_issues": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "next_audit_labeling_guide_version": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "format_and_relation_checks": {"type": "string", "enum": ["pass", "fail"]},
+    "recommendation": {
+      "type": "string",
+      "enum": ["proceed_to_audit", "revise_and_repeat_calibration", "stop"]
+    },
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decisionCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["C1", "C2", "C3", "C4", "C5", "OTHER", "AMBIGUOUS", "INSUFFICIENT"],
+      "properties": {
+        "C1": {"type": "integer", "minimum": 0},
+        "C2": {"type": "integer", "minimum": 0},
+        "C3": {"type": "integer", "minimum": 0},
+        "C4": {"type": "integer", "minimum": 0},
+        "C5": {"type": "integer", "minimum": 0},
+        "OTHER": {"type": "integer", "minimum": 0},
+        "AMBIGUOUS": {"type": "integer", "minimum": 0},
+        "INSUFFICIENT": {"type": "integer", "minimum": 0}
+      }
+    },
+    "annotatorDecisionCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["annotator_id", "counts"],
+      "properties": {
+        "annotator_id": {"type": "string", "minLength": 1},
+        "counts": {"$ref": "#/$defs/decisionCounts"}
+      }
+    },
+    "ruleChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "change_summary", "rationale", "affected_decisions"],
+      "properties": {
+        "rule_id": {"type": "string", "minLength": 1},
+        "change_summary": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "affected_decisions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["C1", "C2", "C3", "C4", "C5", "OTHER", "AMBIGUOUS", "INSUFFICIENT"]
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"recommendation": {"const": "proceed_to_audit"}},
+        "required": ["recommendation"]
+      },
+      "then": {
+        "properties": {
+          "next_audit_labeling_guide_version": {"type": "string", "minLength": 1},
+          "format_and_relation_checks": {"const": "pass"}
+        }
+      }
+    }
+  ]
+}

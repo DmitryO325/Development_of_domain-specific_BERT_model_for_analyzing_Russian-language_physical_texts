@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:h2-calibration-plan:v1",
+  "title": "План калибровочной партии H2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_version",
+    "h2_scheme_version",
+    "grnti_excerpt_version",
+    "candidate_frame_id",
+    "source_candidate_manifest_path",
+    "source_candidate_manifest_sha256",
+    "selection_seed",
+    "selection_method",
+    "total_n",
+    "clean_total_n",
+    "clean_quotas",
+    "challenge_total_n",
+    "challenge_quotas",
+    "challenge_strata_are_search_hints",
+    "deduplication_rule_version",
+    "fallback_order",
+    "audit_overlap_forbidden",
+    "seen_by_annotators",
+    "annotation_blinding_required",
+    "allowed_classification_splits",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "h2-calibration-plan-v1"},
+    "plan_version": {"type": "string", "minLength": 1},
+    "h2_scheme_version": {"type": "string", "minLength": 1},
+    "grnti_excerpt_version": {"type": "string", "minLength": 1},
+    "candidate_frame_id": {"type": "string", "minLength": 1},
+    "source_candidate_manifest_path": {"type": "string", "minLength": 1},
+    "source_candidate_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "selection_seed": {"type": "integer", "minimum": 0},
+    "selection_method": {"type": "string", "const": "random_within_frozen_strata"},
+    "total_n": {"type": "integer", "const": 30},
+    "clean_total_n": {"type": "integer", "const": 15},
+    "clean_quotas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["C1", "C2", "C3", "C4", "C5"],
+      "properties": {
+        "C1": {"type": "integer", "const": 3},
+        "C2": {"type": "integer", "const": 3},
+        "C3": {"type": "integer", "const": 3},
+        "C4": {"type": "integer", "const": 3},
+        "C5": {"type": "integer", "const": 3}
+      }
+    },
+    "challenge_total_n": {"type": "integer", "const": 15},
+    "challenge_quotas": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/challengeQuota"},
+      "allOf": [
+        {
+          "contains": {
+            "properties": {"target_n": {"const": 2}},
+            "required": ["target_n"]
+          },
+          "minContains": 6,
+          "maxContains": 6
+        },
+        {
+          "contains": {
+            "properties": {"target_n": {"const": 1}},
+            "required": ["target_n"]
+          },
+          "minContains": 3,
+          "maxContains": 3
+        },
+        {
+          "contains": {
+            "properties": {
+              "boundary_codes": {
+                "contains": {"const": "29.32"},
+                "minContains": 1
+              }
+            },
+            "required": ["boundary_codes"]
+          },
+          "minContains": 1
+        }
+      ]
+    },
+    "challenge_strata_are_search_hints": {"type": "boolean", "const": true},
+    "deduplication_rule_version": {"type": "string", "minLength": 1},
+    "fallback_order": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "audit_overlap_forbidden": {"type": "boolean", "const": true},
+    "seen_by_annotators": {"type": "boolean", "const": true},
+    "annotation_blinding_required": {"type": "boolean", "const": true},
+    "allowed_classification_splits": {
+      "type": "array",
+      "prefixItems": [{"const": "train"}],
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "challengeQuota": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stratum_id", "boundary_codes", "search_basis", "target_n"],
+      "properties": {
+        "stratum_id": {"type": "string", "minLength": 1},
+        "boundary_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "search_basis": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "catalog_grnti",
+              "pacs",
+              "udc",
+              "keywords",
+              "publisher_section",
+              "journal_scope",
+              "multiple_codes",
+              "missing_metadata"
+            ]
+          }
+        },
+        "target_n": {"type": "integer", "enum": [1, 2]}
+      }
+    }
+  }
+}

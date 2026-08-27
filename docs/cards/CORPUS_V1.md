@@ -10,6 +10,7 @@
 - [`PLAN.md`](../PLAN.md) — roadmap и критерии готовности;
 - [`DECISIONS.md`](../DECISIONS.md) — принятые методологические решения;
 - [`SOURCE_AUDIT.md`](../SOURCE_AUDIT.md) — источники и разрешённые операции;
+- [`GRNTI_2025.md`](GRNTI_2025.md) — зафиксированный эталон и границы H2;
 - [`H2_LABELING.md`](../H2_LABELING.md) — схема `T_v1` и аудит разметки;
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) — целевая структура конвейера.
 
@@ -289,6 +290,8 @@ Schema до начала его заполнения. Для аудита H2 у�
 - `h2_input_sha256: string|null` — хеш точного очищенного `title+abstract`;
 - `label_leakage_audit_version: string|null`;
 - `label_leakage_audit_status: not_checked|passed|failed`;
+- `acquisition_method: manual_download|api|crawler|platform_export|other|null`;
+- `acquisition_scope: single|sample|bulk|null`;
 - `acquisition_status: discovered|rights_blocked|ready|retrieved|failed`;
 - `extraction_status: not_started|running|succeeded|failed`;
 - `qa_status: not_evaluated|passed|quarantined|failed`;
@@ -299,6 +302,9 @@ Schema до начала его заполнения. Для аудита H2 у�
 
 `content_role` описывает смысл содержимого, а `representation` — технический
 формат. Значения `full_text`, `html` и `rss` не смешиваются в одном поле.
+В унаследованном импорте текст получает роль `full_text` только при точно
+известном PDF-методе и ссылке на сохранённый PDF-родитель; одной метки
+`text_source=pdf` недостаточно.
 Состояния разных процессов также не сводятся: файл может успешно извлечься, но
 остаться в карантине качества или быть заблокированным по правам.
 
@@ -320,6 +326,8 @@ Schema до начала его заполнения. Для аудита H2 у�
 - `rights_checked_at: date`;
 - `derivative_scope: array[aggregate_metrics|identifiers|text_fragments|dataset]|null`;
 - `rights_conditions: array[string]`;
+- `conditions_satisfied_at: datetime|null`;
+- `conditions_evidence_sha256: string|null`;
 - `rights_evidence_sha256: string|null`;
 - `rights_expires_at: date|null`;
 - `supersedes_rights_record_id: string|null`.
@@ -332,10 +340,23 @@ Schema до начала его заполнения. Для аудита H2 у�
 заполняется для `derivatives_release`.
 
 Запись статьи может ужесточать или расширять общий статус источника при наличии
-собственной лицензии. Применяется наиболее конкретная строка, а её область
-действия сохраняется явно. Значение
+собственной лицензии. Приоритет областей:
+`source_group < journal < source < work < artifact`; `source` конкретнее
+`journal`, потому что включает языковую версию. Из наиболее конкретной
+строки нельзя выпасть, просто не указав её ID в артефакте. Значение
+`scope_type=work` сопоставляется и с каноническим `work_id`, и с его
+`work_aliases`, поэтому смена идентификатора не обходит прежнее ограничение.
 `lawful_access_research_assumption` фиксирует проектное решение, а не выдаёт его
 за текст лицензии; явное ограничение более конкретной записи имеет приоритет.
+Статус `conditional` разрешает операцию только когда заполнены оба
+поля `conditions_satisfied_at` и `conditions_evidence_sha256`; до этого он
+блокирует операцию.
+Для любого разрешающего `allowed|conditional` также обязателен хеш самого
+основания в `rights_evidence_sha256`; он не заменяет доказательство выполнения
+условий.
+Пара полей `conditions_*` в `rights-v1` пока является минимальным материализованным
+представлением. До реального заполнения его нужно заменить журналом выполнения
+каждого условия, описанным в предложенном `DEC-013`.
 Семь логических полей `*_allowed` в `SOURCE_AUDIT.md` являются сводным
 представлением этих построчных записей, а не отдельными колонками одной строки.
 
