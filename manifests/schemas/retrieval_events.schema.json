@@ -50,6 +50,7 @@
       "type": "string",
       "enum": ["single", "sample", "bulk"]
     },
+    "acquisition_agent": {"type": ["string", "null"]},
     "rights_record_ids": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},
@@ -106,14 +107,48 @@
       },
       "then": {
         "properties": {
-          "final_url": {"type": "string", "format": "uri"},
-          "http_status": {"type": "integer", "minimum": 200, "maximum": 399},
           "response_path": {"type": "string", "minLength": 1},
           "response_sha256": {"$ref": "#/$defs/sha256"},
           "response_bytes": {"type": "integer", "minimum": 0},
           "error_code": {"type": "null"},
           "error_detail": {"type": "null"}
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "acquisition_method": {"const": "manual_download"}
+              },
+              "required": ["acquisition_method"]
+            },
+            "then": {
+              "properties": {
+                "final_url": {
+                  "anyOf": [
+                    {"type": "string", "format": "uri"},
+                    {"type": "null"}
+                  ]
+                },
+                "http_status": {
+                  "anyOf": [
+                    {"type": "integer", "minimum": 200, "maximum": 399},
+                    {"type": "null"}
+                  ]
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "final_url": {"type": "string", "format": "uri"},
+                "http_status": {
+                  "type": "integer",
+                  "minimum": 200,
+                  "maximum": 399
+                }
+              }
+            }
+          }
+        ]
       }
     },
     {

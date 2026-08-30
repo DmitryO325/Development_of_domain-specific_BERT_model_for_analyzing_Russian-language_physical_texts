@@ -229,6 +229,9 @@ data/processed/**
 # Локальные черновики и блокноты
 /draft/
 
+# Локальные доказательства прав и переписка с источниками
+/docs/evidence/
+
 # Реальные реестры аудита локальны; схемы и синтетические примеры отслеживаются
 manifests/*.jsonl
 manifests/*.json
@@ -238,6 +241,7 @@ manifests/*.yaml
 manifests/*.yml
 manifests/*.sha256
 manifests/frozen/
+manifests/imports/
 manifests/results/
 manifests/.registry.lock
 
