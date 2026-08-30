@@ -26,11 +26,17 @@ class ManifestSchemaTests(unittest.TestCase):
 
         cls.catalog = SchemaCatalog(PROJECT_ROOT / "manifests" / "schemas")
 
-    def _example(self, kind: str) -> dict[str, Any]:
-        """Загрузить первую примерную запись указанного вида."""
+    def _example(self, kind: str, *, index: int = 0) -> dict[str, Any]:
+        """Загрузить примерную запись указанного вида по её номеру."""
 
         path = PROJECT_ROOT / "manifests" / "templates" / f"{kind}.example.jsonl"
-        return json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        lines = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+
+        return json.loads(lines[index])
 
     def test_core_schemas_and_all_core_examples(self) -> None:
         """Основные примеры должны соответствовать своим схемам."""
@@ -47,7 +53,19 @@ class ManifestSchemaTests(unittest.TestCase):
 
         mappings = {
             "artifacts.example.jsonl": "artifacts.schema.json",
+            "artifact_revisions.example.jsonl": (
+                "artifact_revisions.schema.json"
+            ),
+            "condition_fulfilments.example.jsonl": (
+                "condition_fulfilments.schema.json"
+            ),
+            "frozen_manifest.example.json": "frozen_manifest.schema.json",
+            "identity_conflicts.example.jsonl": "identity_conflicts.schema.json",
+            "operation_decisions.example.jsonl": "operation_decisions.schema.json",
+            "retrieval_events.example.jsonl": "retrieval_events.schema.json",
             "rights.example.jsonl": "rights.schema.json",
+            "work_aliases.example.jsonl": "work_aliases.schema.json",
+            "work_revisions.example.jsonl": "work_revisions.schema.json",
             "works.example.jsonl": "works.schema.json",
             "h2_adjudication_form.example.jsonl": "h2_adjudication_form.schema.json",
             "h2_annotation_form.example.jsonl": "h2_annotation_form.schema.json",
@@ -81,6 +99,78 @@ class ManifestSchemaTests(unittest.TestCase):
                     key=lambda item: str(item.path),
                 )
                 self.assertEqual(errors, [], msg=f"{template_name}: {errors}")
+
+    def test_dec013_examples_are_available_through_catalog(self) -> None:
+        """Каталог должен проверять все новые журналы жизненного цикла."""
+
+        kinds = (
+            "work_revisions",
+            "artifact_revisions",
+            "retrieval_events",
+            "work_aliases",
+            "identity_conflicts",
+            "operation_decisions",
+            "condition_fulfilments",
+        )
+
+        for kind in kinds:
+            path = (
+                PROJECT_ROOT
+                / "manifests"
+                / "templates"
+                / f"{kind}.example.jsonl"
+            )
+
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line:
+                    self.catalog.validate(kind, json.loads(line))
+
+        frozen_path = (
+            PROJECT_ROOT / "manifests" / "templates" / "frozen_manifest.example.json"
+        )
+
+        self.catalog.validate(
+            "frozen_manifest",
+            json.loads(frozen_path.read_text(encoding="utf-8")),
+        )
+
+    def test_metadata_only_retrieval_cannot_invent_http_response(self) -> None:
+        """Событие без снимка ответа не должно содержать фиктивные HTTP-поля."""
+
+        record = self._example("retrieval_events", index=1)
+        self.catalog.validate("retrieval_events", record)
+
+        record["http_status"] = 200
+
+        with self.assertRaises(SchemaValidationError):
+            self.catalog.validate("retrieval_events", record)
+
+    def test_derivatives_release_requires_one_derivative_scope(self) -> None:
+        """Решение о выпуске должно относиться к одному виду производного объекта."""
+
+        record = self._example("operation_decisions")
+        record["operation"] = "derivatives_release"
+
+        with self.assertRaises(SchemaValidationError):
+            self.catalog.validate("operation_decisions", record)
+
+    def test_pending_identity_conflict_has_no_resolution(self) -> None:
+        """Неразрешённый конфликт не должен выглядеть как принятое решение."""
+
+        record = self._example("identity_conflicts")
+        record["resolution_reason"] = "Оставлен текущий заголовок."
+
+        with self.assertRaises(SchemaValidationError):
+            self.catalog.validate("identity_conflicts", record)
+
+    def test_revoked_condition_fulfilment_requires_previous_record(self) -> None:
+        """Отзыв выполнения условия должен явно заменять прежнюю запись."""
+
+        record = self._example("condition_fulfilments")
+        record["status"] = "revoked"
+
+        with self.assertRaises(SchemaValidationError):
+            self.catalog.validate("condition_fulfilments", record)
 
     def test_eligible_work_requires_abstract(self) -> None:
         """Допущенная к использованию работа должна иметь аннотацию."""

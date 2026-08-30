@@ -19,6 +19,14 @@ SCHEMA_FILES = {
     "works": "works.schema.json",
     "artifacts": "artifacts.schema.json",
     "rights": "rights.schema.json",
+    "work_revisions": "work_revisions.schema.json",
+    "artifact_revisions": "artifact_revisions.schema.json",
+    "retrieval_events": "retrieval_events.schema.json",
+    "work_aliases": "work_aliases.schema.json",
+    "identity_conflicts": "identity_conflicts.schema.json",
+    "operation_decisions": "operation_decisions.schema.json",
+    "condition_fulfilments": "condition_fulfilments.schema.json",
+    "frozen_manifest": "frozen_manifest.schema.json",
 }
 MAX_VALIDATION_ERRORS = 8
 

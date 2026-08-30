@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:work-revisions:v1",
+  "title": "Неизменяемый журнал ревизий карточек работ",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "work_revision_id",
+    "work_id",
+    "changed_at",
+    "reason",
+    "previous_sha256",
+    "new_sha256",
+    "changed_fields",
+    "source_retrieval_ids"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "work-revisions-v1"},
+    "work_revision_id": {"type": "string", "minLength": 1},
+    "work_id": {"type": "string", "minLength": 1},
+    "changed_at": {"type": "string", "format": "date-time"},
+    "reason": {"type": "string", "minLength": 1},
+    "previous_sha256": {
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "new_sha256": {"$ref": "#/$defs/sha256"},
+    "changed_fields": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "source_retrieval_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

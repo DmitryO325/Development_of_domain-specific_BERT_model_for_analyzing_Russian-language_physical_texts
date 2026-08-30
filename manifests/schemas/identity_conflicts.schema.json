@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:identity-conflicts:v1",
+  "title": "Неизменяемый журнал конфликтов идентичности работ",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "conflict_id",
+    "created_at",
+    "work_id",
+    "field",
+    "existing_value",
+    "candidate_value",
+    "source_retrieval_ids",
+    "status",
+    "resolution_reason",
+    "resolved_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "identity-conflicts-v1"},
+    "conflict_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "work_id": {"type": "string", "minLength": 1},
+    "field": {
+      "type": "string",
+      "enum": [
+        "doi",
+        "edn",
+        "title",
+        "published_at",
+        "journal_id",
+        "journal_title",
+        "canonical_url",
+        "other"
+      ]
+    },
+    "existing_value": {"type": "string", "minLength": 1},
+    "candidate_value": {"type": "string", "minLength": 1},
+    "source_retrieval_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "resolved_keep_current", "resolved_replace_current"]
+    },
+    "resolution_reason": {"type": ["string", "null"], "minLength": 1},
+    "resolved_at": {
+      "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "pending"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "resolution_reason": {"type": "null"},
+          "resolved_at": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "resolution_reason": {"type": "string", "minLength": 1},
+          "resolved_at": {"type": "string", "format": "date-time"}
+        }
+      }
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import http.client
 import json
@@ -12,6 +13,7 @@ import urllib.error
 import urllib.request
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,50 @@ from urllib.parse import urlsplit
 
 USER_AGENT = "NIR-corpus-bot/0.1 (+academic research; contact via GitHub DmitryO325)"
 RETRYABLE_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+SAFE_RESPONSE_HEADERS = {
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "etag",
+    "last-modified",
+    "date",
+    "location",
+}
+
+
+@dataclass(frozen=True)
+class HttpResponseSnapshot:
+    """Неизменяемый снимок успешного HTTP-ответа и его точных байтов."""
+
+    requested_url: str
+    final_url: str
+    status_code: int
+    headers: tuple[tuple[str, str], ...]
+    retrieved_at: str
+    body: bytes
+
+    def canonical_metadata(self) -> bytes:
+        """Сериализовать метаданные ответа в детерминированный UTF-8 JSON."""
+
+        metadata = {
+            "final_url": self.final_url,
+            "headers": [list(header) for header in sorted(self.headers)],
+            "requested_url": self.requested_url,
+            "retrieved_at": self.retrieved_at,
+            "status_code": self.status_code,
+        }
+
+        return json.dumps(
+            metadata,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def metadata_sha256(self) -> str:
+        """Вычислить SHA-256 канонических метаданных ответа."""
+
+        return hashlib.sha256(self.canonical_metadata()).hexdigest()
 
 
 @dataclass
@@ -47,15 +93,93 @@ class Document:
         return asdict(self)
 
 
-def fetch_bytes(
+def _current_utc_timestamp() -> str:
+    """Получить текущую временную метку UTC с микросекундами."""
+
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _response_url(response: Any, requested_url: str) -> str:
+    """Получить конечный URL ответа с резервом на исходный адрес."""
+
+    get_url = getattr(response, "geturl", None)
+
+    if not callable(get_url):
+        return requested_url
+
+    try:
+        final_url = get_url()
+
+    except (AttributeError, TypeError, ValueError):
+        return requested_url
+
+    return final_url if isinstance(final_url, str) and final_url else requested_url
+
+
+def _response_status_code(response: Any) -> int:
+    """Получить числовой HTTP-статус успешного ответа."""
+
+    status_code = getattr(response, "status", None)
+
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        return status_code
+
+    get_code = getattr(response, "getcode", None)
+
+    if callable(get_code):
+        try:
+            status_code = get_code()
+
+        except (AttributeError, TypeError, ValueError):
+            status_code = None
+
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        return status_code
+
+    return 200
+
+
+def _safe_response_headers(response: Any) -> tuple[tuple[str, str], ...]:
+    """Оставить безопасные заголовки ответа в детерминированном порядке."""
+
+    response_headers = getattr(response, "headers", None)
+    items = getattr(response_headers, "items", None)
+
+    if not callable(items):
+        return ()
+
+    try:
+        raw_headers = items()
+
+    except (AttributeError, TypeError, ValueError):
+        return ()
+
+    safe_headers: list[tuple[str, str]] = []
+
+    try:
+        for raw_name, raw_value in raw_headers:
+            name = str(raw_name).strip().casefold()
+
+            if name not in SAFE_RESPONSE_HEADERS:
+                continue
+
+            safe_headers.append((name, str(raw_value).strip()))
+
+    except (TypeError, ValueError):
+        return ()
+
+    return tuple(sorted(safe_headers))
+
+
+def fetch_response(
     url: str,
     *,
     timeout: float = 120.0,
     retries: int = 3,
     delay_seconds: float = 1.0,
-) -> bytes:
+) -> HttpResponseSnapshot:
     """
-    Скачать HTTP(S)-ресурс как байты с повторами временных ошибок.
+    Скачать HTTP(S)-ресурс и зафиксировать доказательство успешного ответа.
 
     Ошибки HTTP, которые не являются временными (например, 404), не
     повторяются.
@@ -88,7 +212,17 @@ def fetch_bytes(
                 request,
                 timeout=timeout,
             ) as response:
-                return response.read()
+                body = response.read()
+                retrieved_at = _current_utc_timestamp()
+
+                return HttpResponseSnapshot(
+                    requested_url=url,
+                    final_url=_response_url(response, url),
+                    status_code=_response_status_code(response),
+                    headers=_safe_response_headers(response),
+                    retrieved_at=retrieved_at,
+                    body=body,
+                )
 
         except urllib.error.HTTPError as exception:
             status_code = exception.code
@@ -116,6 +250,25 @@ def fetch_bytes(
         raise RuntimeError(f"Не удалось загрузить {url}")
 
     raise RuntimeError(f"Не удалось загрузить {url}: {last_error}") from last_error
+
+
+def fetch_bytes(
+    url: str,
+    *,
+    timeout: float = 120.0,
+    retries: int = 3,
+    delay_seconds: float = 1.0,
+) -> bytes:
+    """Скачать только байты HTTP(S)-ресурса через совместимую оболочку."""
+
+    response = fetch_response(
+        url,
+        timeout=timeout,
+        retries=retries,
+        delay_seconds=delay_seconds,
+    )
+
+    return response.body
 
 
 def fetch_html(
@@ -148,6 +301,7 @@ def fetch_html(
 
 def html_to_text(fragment: str) -> str:
     """Грубо преобразовать HTML-фрагмент в обычный текст."""
+
     # TODO: заменить очистку регулярными выражениями на полноценный HTML-парсер
     # (например, BeautifulSoup + lxml) и извлекать только основное содержимое статьи.
 

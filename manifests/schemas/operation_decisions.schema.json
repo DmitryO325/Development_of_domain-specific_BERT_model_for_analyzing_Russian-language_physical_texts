@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:operation-decisions:v1",
+  "title": "Неизменяемый журнал решений по операциям с данными",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision_id",
+    "created_at",
+    "decision_key",
+    "operation",
+    "derivative_scope",
+    "subject_type",
+    "subject_id",
+    "decision_at",
+    "context",
+    "context_sha256",
+    "rights_record_ids",
+    "rights_snapshot_sha256",
+    "condition_fulfilment_ids",
+    "supersedes_decision_id",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "operation-decisions-v1"},
+    "decision_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "decision_key": {"type": "string", "minLength": 1},
+    "operation": {
+      "type": "string",
+      "enum": [
+        "acquisition",
+        "storage",
+        "evaluation",
+        "ml_training",
+        "redistribution",
+        "derivatives_release",
+        "checkpoint_release"
+      ]
+    },
+    "derivative_scope": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": ["aggregate_metrics", "identifiers", "text_fragments", "dataset"]
+        },
+        {"type": "null"}
+      ]
+    },
+    "subject_type": {
+      "type": "string",
+      "enum": ["project", "source", "work", "artifact", "retrieval", "release"]
+    },
+    "subject_id": {"type": "string", "minLength": 1},
+    "decision_at": {"type": "string", "format": "date-time"},
+    "context": {"$ref": "#/$defs/context"},
+    "context_sha256": {"$ref": "#/$defs/sha256"},
+    "rights_record_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "rights_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "condition_fulfilment_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "supersedes_decision_id": {"type": ["string", "null"], "minLength": 1},
+    "status": {
+      "type": "string",
+      "enum": ["allowed", "blocked", "conditional_pending"]
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "acquisitionMethod": {
+      "type": "string",
+      "enum": ["manual_download", "api", "crawler", "platform_export", "other"]
+    },
+    "acquisitionScope": {
+      "type": "string",
+      "enum": ["single", "sample", "bulk"]
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["acquisition_method", "acquisition_scope"],
+      "properties": {
+        "acquisition_method": {
+          "anyOf": [
+            {"$ref": "#/$defs/acquisitionMethod"},
+            {"type": "null"}
+          ]
+        },
+        "acquisition_scope": {
+          "anyOf": [
+            {"$ref": "#/$defs/acquisitionScope"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"acquisition_method": {"type": "null"}},
+            "required": ["acquisition_method"]
+          },
+          "then": {
+            "properties": {"acquisition_scope": {"type": "null"}}
+          },
+          "else": {
+            "properties": {
+              "acquisition_scope": {"$ref": "#/$defs/acquisitionScope"}
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"operation": {"const": "derivatives_release"}},
+        "required": ["operation"]
+      },
+      "then": {
+        "properties": {
+          "derivative_scope": {
+            "type": "string",
+            "enum": ["aggregate_metrics", "identifiers", "text_fragments", "dataset"]
+          }
+        }
+      },
+      "else": {
+        "properties": {"derivative_scope": {"type": "null"}}
+      }
+    }
+  ]
+}

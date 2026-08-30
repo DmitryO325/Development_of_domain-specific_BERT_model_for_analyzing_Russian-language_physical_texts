@@ -35,7 +35,7 @@ def main() -> int:
         action="store_true",
         help="Считать предупреждения ошибками",
     )
-    
+
     arguments = parser.parse_args()
 
     report = ManifestStore(

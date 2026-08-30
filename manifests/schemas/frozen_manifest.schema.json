@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:frozen-manifest:v1",
+  "title": "Паспорт замороженного снимка реестров",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "created_at", "snapshot_hashes", "files"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "frozen-manifest-v1"},
+    "version": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "snapshot_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "works",
+        "artifacts",
+        "rights",
+        "work_revisions",
+        "artifact_revisions",
+        "retrieval_events",
+        "work_aliases",
+        "identity_conflicts",
+        "operation_decisions",
+        "condition_fulfilments"
+      ],
+      "properties": {
+        "works": {"$ref": "#/$defs/sha256"},
+        "artifacts": {"$ref": "#/$defs/sha256"},
+        "rights": {"$ref": "#/$defs/sha256"},
+        "work_revisions": {"$ref": "#/$defs/sha256"},
+        "artifact_revisions": {"$ref": "#/$defs/sha256"},
+        "retrieval_events": {"$ref": "#/$defs/sha256"},
+        "work_aliases": {"$ref": "#/$defs/sha256"},
+        "identity_conflicts": {"$ref": "#/$defs/sha256"},
+        "operation_decisions": {"$ref": "#/$defs/sha256"},
+        "condition_fulfilments": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/file"},
+      "minItems": 10
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "records"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "records": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

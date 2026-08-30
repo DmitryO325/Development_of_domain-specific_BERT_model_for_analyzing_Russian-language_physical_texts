@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 import urllib.error
+
 from argparse import Namespace
+from dataclasses import FrozenInstanceError
 from http.client import BadStatusLine, IncompleteRead
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
-from scripts.scrape import cmd_pilot
-from src.collect.base import fetch_bytes, html_to_text
+from scripts.scrape import DocumentRecorder, cmd_pilot
+from src.collect.base import (
+    Document,
+    HttpResponseSnapshot,
+    fetch_bytes,
+    fetch_response,
+    html_to_text,
+)
 from src.collect.pdf_text import (
     _clean_pdf_lines,
     download_pdf,
@@ -22,10 +33,118 @@ from src.collect.pdf_text import (
 )
 from src.collect.rss_feed import RssScraper
 from src.collect.ufn import UfnScraper, _drop_nav_prefix
+from src.corpus.manifests import (
+    ManifestConcurrencyError,
+    ManifestPlan,
+    ManifestStore,
+)
+from src.corpus.profiles import get_source_profile
 
 
 class BaseCollectionTests(unittest.TestCase):
     """Проверки сетевых и HTML-утилит."""
+
+    def test_fetch_response_captures_safe_evidence_after_full_read(self) -> None:
+        """Снимок должен фиксироваться после чтения и не сохранять секреты."""
+
+        events: list[str] = []
+        response = MagicMock()
+        opened_response = response.__enter__.return_value
+        opened_response.status = 206
+        opened_response.geturl.return_value = "https://cdn.example.test/article.pdf"
+        opened_response.headers.items.return_value = [
+            ("Set-Cookie", "session=secret"),
+            ("ETag", '"version-1"'),
+            ("Content-Type", "application/pdf"),
+            ("X-Internal-Token", "secret"),
+            ("Content-Length", "7"),
+        ]
+
+        def read_body() -> bytes:
+            """Зафиксировать момент полного чтения тестового ответа."""
+
+            events.append("read")
+            return b"content"
+
+        def current_timestamp() -> str:
+            """Вернуть фиксированное время после чтения тестового ответа."""
+
+            events.append("timestamp")
+            return "2026-08-30T12:00:00.000000+00:00"
+
+        opened_response.read.side_effect = read_body
+
+        with (
+            patch(
+                "src.collect.base.urllib.request.urlopen",
+                return_value=response,
+            ),
+            patch(
+                "src.collect.base._current_utc_timestamp",
+                side_effect=current_timestamp,
+            ),
+        ):
+            snapshot = fetch_response("https://example.test/article.pdf")
+
+        self.assertEqual(events, ["read", "timestamp"])
+        self.assertEqual(snapshot.requested_url, "https://example.test/article.pdf")
+        self.assertEqual(snapshot.final_url, "https://cdn.example.test/article.pdf")
+        self.assertEqual(snapshot.status_code, 206)
+        self.assertEqual(snapshot.body, b"content")
+        self.assertEqual(
+            snapshot.headers,
+            (
+                ("content-length", "7"),
+                ("content-type", "application/pdf"),
+                ("etag", '"version-1"'),
+            ),
+        )
+
+    def test_response_metadata_is_canonical_and_hashed(self) -> None:
+        """Порядок заголовков не должен менять JSON метаданных и его SHA-256."""
+
+        first = HttpResponseSnapshot(
+            requested_url="https://example.test/source",
+            final_url="https://example.test/final",
+            status_code=200,
+            headers=(("etag", '"one"'), ("content-type", "text/plain")),
+            retrieved_at="2026-08-30T12:00:00.000000+00:00",
+            body=b"body",
+        )
+        second = HttpResponseSnapshot(
+            requested_url="https://example.test/source",
+            final_url="https://example.test/final",
+            status_code=200,
+            headers=(("content-type", "text/plain"), ("etag", '"one"')),
+            retrieved_at="2026-08-30T12:00:00.000000+00:00",
+            body=b"body",
+        )
+
+        self.assertEqual(first.canonical_metadata(), second.canonical_metadata())
+        self.assertEqual(first.metadata_sha256(), second.metadata_sha256())
+        self.assertEqual(
+            first.metadata_sha256(),
+            hashlib.sha256(first.canonical_metadata()).hexdigest(),
+        )
+
+        metadata = json.loads(first.canonical_metadata())
+        self.assertNotIn("body", metadata)
+        self.assertEqual(metadata["status_code"], 200)
+
+    def test_response_snapshot_is_frozen(self) -> None:
+        """Зафиксированный снимок ответа нельзя изменять после создания."""
+
+        snapshot = HttpResponseSnapshot(
+            requested_url="https://example.test/source",
+            final_url="https://example.test/source",
+            status_code=200,
+            headers=(),
+            retrieved_at="2026-08-30T12:00:00.000000+00:00",
+            body=b"body",
+        )
+
+        with self.assertRaises(FrozenInstanceError):
+            setattr(snapshot, "status_code", 201)
 
     def test_fetch_bytes_retries_temporary_error_with_backoff(self) -> None:
         """Временная сетевая ошибка должна приводить к повтору."""
@@ -88,6 +207,10 @@ class BaseCollectionTests(unittest.TestCase):
                 side_effect=[broken_response, valid_response],
             ) as urlopen,
             patch("src.collect.base.time.sleep") as sleep,
+            patch(
+                "src.collect.base._current_utc_timestamp",
+                return_value="2026-08-30T12:00:00.000000+00:00",
+            ) as timestamp,
         ):
             result = fetch_bytes(
                 "https://example.test/file",
@@ -98,6 +221,7 @@ class BaseCollectionTests(unittest.TestCase):
         self.assertEqual(result, b"complete")
         self.assertEqual(urlopen.call_count, 2)
         sleep.assert_called_once_with(0.5)
+        timestamp.assert_called_once_with()
 
     def test_fetch_bytes_retries_other_http_protocol_errors(self) -> None:
         """Временная ошибка HTTP-протокола должна повторяться."""
@@ -498,6 +622,255 @@ class UfnScraperTests(unittest.TestCase):
 class ScrapeCommandTests(unittest.TestCase):
     """Проверки безопасного запуска команды сбора."""
 
+    @staticmethod
+    def _right(operation: str) -> dict[str, Any]:
+        """Создать разрешение источника для прямой регистрации."""
+
+        return {
+            "schema_version": "rights-v1",
+            "created_at": "2026-08-30T10:00:00+03:00",
+            "rights_record_id": f"right-{operation}",
+            "scope_type": "source",
+            "scope_id": "S01_UFN_RU",
+            "operation": operation,
+            "status": "allowed",
+            "access_basis": "Синтетическое разрешение для теста команды.",
+            "basis_type": "explicit_license",
+            "acquisition_method": "crawler" if operation == "acquisition" else None,
+            "acquisition_scope": "sample" if operation == "acquisition" else None,
+            "terms_url": "https://example.invalid/test-license",
+            "rights_checked_at": "2026-08-30",
+            "derivative_scope": None,
+            "rights_conditions": [],
+            "conditions_satisfied_at": None,
+            "conditions_evidence_sha256": None,
+            "rights_evidence_sha256": "c" * 64,
+            "rights_expires_at": None,
+            "supersedes_rights_record_id": None,
+        }
+
+    def test_document_recorder_writes_directly_to_manifests(self) -> None:
+        """Явный режим должен обходить прототипный JSONL и писать реестры."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            manifest_dir = project_root / "manifests"
+            store = ManifestStore(
+                project_root=project_root,
+                manifest_dir=manifest_dir,
+                schema_dir=Path(__file__).resolve().parents[1]
+                / "manifests"
+                / "schemas",
+            )
+            store.commit(
+                ManifestPlan(
+                    rights=[self._right("acquisition"), self._right("storage")]
+                )
+            )
+            output = project_root / "prototype.jsonl"
+            arguments = Namespace(
+                output=str(output),
+                fresh=False,
+                register_manifests=True,
+                manifest_dir=manifest_dir,
+                profile="auto",
+                content_role="title_abstract",
+                acquisition_method="crawler",
+                acquisition_scope="sample",
+                extraction_method="html_to_text",
+                extraction_version="html-v1",
+                rights_record_id=["right-acquisition", "right-storage"],
+            )
+            recorder = DocumentRecorder(
+                arguments,
+                (get_source_profile("ufn"),),
+                project_root=project_root,
+            )
+            saved = recorder.save(
+                Document(
+                    source="ufn.ru",
+                    url="https://ufn.ru/ru/articles/2024/1/a/",
+                    title="Квантовые свойства плазмы",
+                    text="Аннотация физической статьи на русском языке.",
+                    published="2024-01-10",
+                    extra={"year": "2024", "text_source": "html"},
+                )
+            )
+
+            self.assertTrue(saved)
+            self.assertFalse(output.exists())
+            self.assertEqual(len(store.records("works")), 1)
+            self.assertEqual(len(store.records("artifacts")), 1)
+            self.assertEqual(len(store.records("retrieval_events")), 1)
+            self.assertEqual(
+                store.records("retrieval_events")[0]["outcome"],
+                "metadata_only",
+            )
+
+    def test_manifest_registration_rejects_fresh_mode(self) -> None:
+        """Прямая регистрация не должна принимать удаляющий режим fresh."""
+
+        arguments = Namespace(
+            output="unused.jsonl",
+            fresh=True,
+            register_manifests=True,
+            manifest_dir="manifests",
+            profile="auto",
+        )
+
+        with self.assertRaisesRegex(ValueError, "--fresh несовместим"):
+            DocumentRecorder(arguments, (get_source_profile("ufn"),))
+
+    def test_manifest_registration_rejects_unproven_full_text(self) -> None:
+        """Команда не должна объявлять полный текст без исходного ответа."""
+
+        arguments = Namespace(
+            output="unused.jsonl",
+            fresh=False,
+            register_manifests=True,
+            manifest_dir="manifests",
+            profile="auto",
+            content_role="full_text",
+            acquisition_method="crawler",
+            acquisition_scope="sample",
+            extraction_method="html_to_text",
+            extraction_version="html-v1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "full_text"):
+            DocumentRecorder(arguments, (get_source_profile("ufn"),))
+
+    def test_manifest_registration_rejects_false_collection_mode(self) -> None:
+        """Команда-обходчик не должна записывать manual_download или single."""
+
+        base_arguments = {
+            "output": "unused.jsonl",
+            "fresh": False,
+            "register_manifests": True,
+            "manifest_dir": "manifests",
+            "profile": "auto",
+            "content_role": "metadata_only",
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "extraction_method": "rss_summary_to_text",
+            "extraction_version": "rss-v1",
+        }
+
+        with self.assertRaisesRegex(ValueError, "crawler"):
+            DocumentRecorder(
+                Namespace(**base_arguments),
+                (get_source_profile("ufn"),),
+            )
+
+        base_arguments["acquisition_method"] = "crawler"
+        base_arguments["acquisition_scope"] = "single"
+
+        with self.assertRaisesRegex(ValueError, "single"):
+            DocumentRecorder(
+                Namespace(**base_arguments),
+                (get_source_profile("ufn"),),
+            )
+
+    def test_fresh_waits_for_first_successful_document(self) -> None:
+        """Режим fresh не должен удалять старый файл до валидной записи."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "corpus.jsonl"
+            output.write_text("old\n", encoding="utf-8")
+            recorder = DocumentRecorder(
+                Namespace(
+                    output=str(output),
+                    fresh=True,
+                    register_manifests=False,
+                    profile="auto",
+                ),
+                (),
+            )
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "old\n")
+            self.assertFalse(
+                recorder.save(
+                    Document(
+                        source="ufn.ru",
+                        url="https://ufn.ru/",
+                        title="Пропущено",
+                        text="",
+                    )
+                )
+            )
+            self.assertEqual(output.read_text(encoding="utf-8"), "old\n")
+
+    def test_document_recorder_retries_only_concurrent_snapshot_change(self) -> None:
+        """Параллельное CAS-изменение надо согласовать заново без сети."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            manifest_dir = project_root / "manifests"
+            store = ManifestStore(
+                project_root=project_root,
+                manifest_dir=manifest_dir,
+                schema_dir=Path(__file__).resolve().parents[1]
+                / "manifests"
+                / "schemas",
+            )
+            store.commit(
+                ManifestPlan(
+                    rights=[self._right("acquisition"), self._right("storage")]
+                )
+            )
+            arguments = Namespace(
+                output=str(project_root / "unused.jsonl"),
+                fresh=False,
+                register_manifests=True,
+                manifest_dir=manifest_dir,
+                profile="auto",
+                content_role="title_abstract",
+                acquisition_method="crawler",
+                acquisition_scope="sample",
+                extraction_method="html_to_text",
+                extraction_version="html-v1",
+                rights_record_id=["right-acquisition", "right-storage"],
+            )
+            recorder = DocumentRecorder(
+                arguments,
+                (get_source_profile("ufn"),),
+                project_root=project_root,
+            )
+            assert recorder.store is not None
+            real_commit = recorder.store.commit
+            calls = 0
+
+            def commit_with_one_conflict(*args: Any, **kwargs: Any) -> Any:
+                """Имитировать одну гонку между согласованием и записью."""
+
+                nonlocal calls
+                calls += 1
+
+                if calls == 1:
+                    raise ManifestConcurrencyError("синтетическая гонка")
+
+                return real_commit(*args, **kwargs)
+
+            with patch.object(
+                recorder.store,
+                "commit",
+                side_effect=commit_with_one_conflict,
+            ):
+                saved = recorder.save(
+                    Document(
+                        source="ufn.ru",
+                        url="https://ufn.ru/ru/articles/2024/1/a/",
+                        title="Квантовые свойства плазмы",
+                        text="Аннотация физической статьи на русском языке.",
+                        published="2024-01-10",
+                        extra={"year": "2024", "text_source": "html"},
+                    )
+                )
+
+            self.assertTrue(saved)
+            self.assertEqual(calls, 2)
+            self.assertEqual(len(store.records("works")), 1)
+
     def test_pilot_preserves_requested_output_and_supplies_options(self) -> None:
         """Пилот не должен подменять файл или падать из-за аргументов."""
 
@@ -517,6 +890,36 @@ class ScrapeCommandTests(unittest.TestCase):
         self.assertEqual(args.output, str(output))
         self.assertEqual(args.text_source, "pdf+html")
         self.assertEqual(args.max_docs, 4)
+        run_ufn.assert_called_once()
+        run_rss.assert_called_once()
+
+    def test_registered_pilot_preflights_all_profiles_with_complete_arguments(self) -> None:
+        """Пилот должен получить RSS-аргументы до общей проверки."""
+
+        arguments = Namespace(
+            output="unused.jsonl",
+            fresh=False,
+            delay=0,
+            register_manifests=True,
+            acquisition_scope="sample",
+            command="pilot",
+            manifest_dir="manifests",
+        )
+
+        with (
+            patch("scripts.scrape._ufn_profiles", return_value=()) as ufn_profiles,
+            patch("scripts.scrape._rss_profiles", return_value=()) as rss_profiles,
+            patch("scripts.scrape.DocumentRecorder") as recorder,
+            patch("scripts.scrape.cmd_ufn") as run_ufn,
+            patch("scripts.scrape.cmd_rss") as run_rss,
+        ):
+            cmd_pilot(arguments)
+
+        self.assertIsNone(arguments.feed)
+        self.assertEqual(arguments.limit, 8)
+        ufn_profiles.assert_called_once()
+        rss_profiles.assert_called_once()
+        recorder.assert_called_once()
         run_ufn.assert_called_once()
         run_rss.assert_called_once()
 

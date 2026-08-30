@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:work-aliases:v1",
+  "title": "Неизменяемый журнал проверенных псевдонимов работ",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "alias_record_id",
+    "created_at",
+    "work_id",
+    "alias_type",
+    "alias_value",
+    "verified_at",
+    "evidence_sha256",
+    "source_retrieval_id",
+    "supersedes_alias_record_id"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "work-aliases-v1"},
+    "alias_record_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "work_id": {"type": "string", "minLength": 1},
+    "alias_type": {
+      "type": "string",
+      "enum": ["doi", "edn", "source_native_id", "canonical_url", "other"]
+    },
+    "alias_value": {"type": "string", "minLength": 1},
+    "verified_at": {"type": "string", "format": "date-time"},
+    "evidence_sha256": {"$ref": "#/$defs/sha256"},
+    "source_retrieval_id": {"type": ["string", "null"], "minLength": 1},
+    "supersedes_alias_record_id": {"type": ["string", "null"], "minLength": 1}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"alias_type": {"const": "doi"}},
+        "required": ["alias_type"]
+      },
+      "then": {
+        "properties": {
+          "alias_value": {
+            "type": "string",
+            "pattern": "^10\\.[0-9]{4,9}/\\S+$"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"alias_type": {"const": "canonical_url"}},
+        "required": ["alias_type"]
+      },
+      "then": {
+        "properties": {
+          "alias_value": {"type": "string", "format": "uri"}
+        }
+      }
+    }
+  ]
+}

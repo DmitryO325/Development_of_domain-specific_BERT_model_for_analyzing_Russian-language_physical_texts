@@ -8,14 +8,17 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from src.collect.base import Document
 from src.corpus.manifests import (
+    ManifestConcurrencyError,
     ManifestConflictError,
     ManifestError,
     ManifestPlan,
     ManifestStore,
     PlannedBlob,
+    canonical_json,
     sha256_bytes,
 )
 from src.corpus.profiles import get_source_profile
@@ -230,7 +233,8 @@ class ManifestStoreTests(unittest.TestCase):
         plan = self.plan()
         self.store.commit(plan)
         second = self.store.commit(plan)
-        self.assertEqual(second.inserted, {"rights": 0, "works": 0, "artifacts": 0})
+        self.assertTrue(all(count == 0 for count in second.inserted.values()))
+        self.assertTrue(all(count == 0 for count in second.updated.values()))
         self.assertEqual(second.unchanged["works"], 1)
         self.assertEqual(second.unchanged["artifacts"], 1)
         manifest_path = self.project_root / "manifests" / "works.jsonl"
@@ -352,6 +356,339 @@ class ManifestStoreTests(unittest.TestCase):
         with self.assertRaises(ManifestError):
             self.store.preflight([plan])
 
+    def test_later_acquisition_prohibition_does_not_rewrite_history(self) -> None:
+        """Новый запрет должен блокировать будущее, а не прошлое получение."""
+
+        initial = self.plan()
+        self.store.commit(initial)
+        retrieval_count = len(self.store.records("retrieval_events"))
+        decision_count = len(self.store.records("operation_decisions"))
+        blocked = self.right("acquisition", status="prohibited")
+        blocked.update(
+            {
+                "created_at": "2026-08-28T12:00:00+03:00",
+                "rights_checked_at": "2026-08-28",
+                "rights_record_id": "right-work-acquisition-later-blocked",
+                "scope_type": "work",
+                "scope_id": initial.works[0]["work_id"],
+                "access_basis": "Более поздний точечный запрет.",
+            }
+        )
+
+        result = self.store.commit(ManifestPlan(rights=[blocked]))
+
+        self.assertEqual(result.inserted["rights"], 1)
+        self.assertEqual(
+            len(self.store.records("retrieval_events")),
+            retrieval_count,
+        )
+        self.assertEqual(
+            len(self.store.records("operation_decisions")),
+            decision_count,
+        )
+        self.assertTrue(self.store.audit().ok)
+
+        future_event = {
+            "schema_version": "retrieval-events-v1",
+            "retrieval_id": "retrieval:test:after-work-prohibition",
+            "created_at": "2026-08-29T12:00:00+03:00",
+            "request_context_type": "work",
+            "request_context_id": initial.works[0]["work_id"],
+            "source_group_id": None,
+            "requested_url": initial.works[0]["canonical_url"],
+            "final_url": None,
+            "retrieved_at": "2026-08-29T12:00:00+03:00",
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "rights_record_ids": ["right-acquisition"],
+            "http_status": None,
+            "response_headers": {},
+            "response_metadata_sha256": "d" * 64,
+            "response_path": None,
+            "response_sha256": None,
+            "response_bytes": None,
+            "outcome": "metadata_only",
+            "error_code": None,
+            "error_detail": None,
+        }
+
+        with self.assertRaises(ManifestError):
+            self.store.preflight(
+                [ManifestPlan(retrieval_events=[future_event])]
+            )
+
+    def test_retrieval_rights_are_resolved_at_retrieved_at(self) -> None:
+        """Поздняя запись события не должна менять права в момент получения."""
+
+        body = b"historical response"
+        digest = sha256_bytes(body)
+        path = f"data/raw/responses/{digest}.bin"
+        acquisition = self.right("acquisition")
+        storage = self.right("storage")
+        blocked = self.right("acquisition", status="prohibited")
+        blocked.update(
+            {
+                "created_at": "2026-08-28T12:00:00+03:00",
+                "rights_checked_at": "2026-08-28",
+                "rights_record_id": "right-acquisition-later-blocked",
+                "access_basis": "Запрет, появившийся после получения ответа.",
+            }
+        )
+        event = {
+            "schema_version": "retrieval-events-v1",
+            "retrieval_id": "retrieval:test:recorded-later",
+            "created_at": "2026-08-29T12:00:00+03:00",
+            "request_context_type": "source",
+            "request_context_id": self.profile.source_id,
+            "source_group_id": self.profile.source_group_id,
+            "requested_url": "https://example.invalid/historical",
+            "final_url": "https://example.invalid/historical",
+            "retrieved_at": TEST_TIMESTAMP,
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "rights_record_ids": [
+                acquisition["rights_record_id"],
+                storage["rights_record_id"],
+            ],
+            "http_status": 200,
+            "response_headers": {},
+            "response_metadata_sha256": "e" * 64,
+            "response_path": path,
+            "response_sha256": digest,
+            "response_bytes": len(body),
+            "outcome": "succeeded",
+            "error_code": None,
+            "error_detail": None,
+        }
+        plan = ManifestPlan(
+            rights=[acquisition, storage, blocked],
+            retrieval_events=[event],
+            blobs=[PlannedBlob(path, body, digest)],
+        )
+
+        result = self.store.commit(plan)
+
+        self.assertEqual(result.inserted["retrieval_events"], 1)
+        decisions = [
+            item
+            for item in self.store.records("operation_decisions")
+            if item["subject_id"] == event["retrieval_id"]
+        ]
+        acquisition_decision = next(
+            item for item in decisions if item["operation"] == "acquisition"
+        )
+        self.assertEqual(acquisition_decision["decision_at"], TEST_TIMESTAMP)
+        self.assertEqual(acquisition_decision["status"], "allowed")
+
+    def test_backfilled_artifact_uses_historical_acquisition_rights(self) -> None:
+        """Старое получение артефакта должно проверяться в момент получения."""
+
+        acquisition = self.right("acquisition")
+        storage = self.right("storage")
+        blocked = self.right("acquisition", status="prohibited")
+        blocked.update(
+            {
+                "created_at": "2026-08-28T12:00:00+03:00",
+                "rights_checked_at": "2026-08-28",
+                "rights_record_id": "right-acquisition-after-backfill",
+                "access_basis": "Запрет после фактического получения.",
+            }
+        )
+        plan = self.plan(rights=[acquisition, storage, blocked])
+        artifact = plan.artifacts[0]
+        artifact["created_at"] = "2026-08-29T12:00:00+03:00"
+        artifact["updated_at"] = "2026-08-29T12:00:00+03:00"
+
+        result = self.store.commit(plan)
+
+        self.assertEqual(result.inserted["artifacts"], 1)
+        decisions = [
+            item
+            for item in self.store.records("operation_decisions")
+            if item["subject_type"] == "artifact"
+            and item["subject_id"] == artifact["artifact_record_id"]
+            and item["operation"] == "acquisition"
+        ]
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["decision_at"], TEST_TIMESTAMP)
+        self.assertEqual(decisions[0]["status"], "allowed")
+
+    def test_artifact_ignores_failed_attempt_when_selecting_acquisition_time(
+        self,
+    ) -> None:
+        """Решение артефакта должно опираться на первое успешное получение."""
+
+        blocked = self.right("acquisition", status="prohibited")
+        blocked.update(
+            {
+                "created_at": "2026-08-27T09:00:00+03:00",
+                "rights_record_id": "right-acquisition-initially-blocked",
+                "access_basis": "Изначальный запрет для проверки повторной попытки.",
+            }
+        )
+        allowed = self.right("acquisition")
+        allowed.update(
+            {
+                "created_at": "2026-08-28T09:00:00+03:00",
+                "rights_checked_at": "2026-08-28",
+                "rights_record_id": "right-acquisition-later-allowed",
+                "access_basis": "Позднее разрешение повторной попытки.",
+                "supersedes_rights_record_id": blocked["rights_record_id"],
+            }
+        )
+        storage = self.right("storage")
+        plan = self.plan(rights=[blocked, allowed, storage])
+        artifact = plan.artifacts[0]
+        failed_at = "2026-08-27T10:00:00+03:00"
+        succeeded_at = "2026-08-28T12:00:00+03:00"
+        failed_id = "retrieval:test:failed-before-permission"
+        succeeded_id = "retrieval:test:succeeded-after-permission"
+        artifact["created_at"] = "2026-08-29T12:00:00+03:00"
+        artifact["updated_at"] = "2026-08-29T12:00:00+03:00"
+        artifact["retrievals"] = [
+            {
+                "retrieval_id": failed_id,
+                "retrieved_url": artifact["retrievals"][0]["retrieved_url"],
+                "retrieved_at": failed_at,
+                "response_metadata_sha256": "e" * 64,
+            },
+            {
+                "retrieval_id": succeeded_id,
+                "retrieved_url": artifact["retrievals"][0]["retrieved_url"],
+                "retrieved_at": succeeded_at,
+                "response_metadata_sha256": "f" * 64,
+            },
+        ]
+        common = {
+            "schema_version": "retrieval-events-v1",
+            "request_context_type": "artifact",
+            "request_context_id": artifact["artifact_record_id"],
+            "source_group_id": None,
+            "requested_url": plan.works[0]["canonical_url"],
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "response_headers": {},
+        }
+        failed_event = {
+            **common,
+            "retrieval_id": failed_id,
+            "created_at": failed_at,
+            "final_url": None,
+            "retrieved_at": failed_at,
+            "rights_record_ids": [blocked["rights_record_id"]],
+            "http_status": 403,
+            "response_metadata_sha256": "e" * 64,
+            "response_path": None,
+            "response_sha256": None,
+            "response_bytes": None,
+            "outcome": "failed",
+            "error_code": "http_403",
+            "error_detail": "Получение запрещено.",
+        }
+        succeeded_event = {
+            **common,
+            "retrieval_id": succeeded_id,
+            "created_at": succeeded_at,
+            "final_url": plan.works[0]["canonical_url"],
+            "retrieved_at": succeeded_at,
+            "rights_record_ids": [
+                allowed["rights_record_id"],
+                storage["rights_record_id"],
+            ],
+            "http_status": 200,
+            "response_metadata_sha256": "f" * 64,
+            "response_path": artifact["path"],
+            "response_sha256": artifact["sha256"],
+            "response_bytes": artifact["bytes"],
+            "outcome": "succeeded",
+            "error_code": None,
+            "error_detail": None,
+        }
+        plan.retrieval_events = [failed_event, succeeded_event]
+
+        result = self.store.commit(plan)
+
+        self.assertEqual(result.inserted["artifacts"], 1)
+        acquisition_decision = next(
+            item
+            for item in self.store.records("operation_decisions")
+            if item["subject_type"] == "artifact"
+            and item["subject_id"] == artifact["artifact_record_id"]
+            and item["operation"] == "acquisition"
+        )
+        self.assertEqual(acquisition_decision["decision_at"], succeeded_at)
+        self.assertEqual(acquisition_decision["status"], "allowed")
+
+    def test_retrieved_artifact_requires_nonfailed_retrieval(self) -> None:
+        """Статус retrieved нельзя вывести только из неудачной попытки."""
+
+        blocked = self.right("acquisition", status="prohibited")
+        blocked.update(
+            {
+                "created_at": "2026-08-27T09:00:00+03:00",
+                "rights_record_id": "right-acquisition-failed-only",
+                "access_basis": "Запрет единственной неудачной попытки.",
+            }
+        )
+        allowed = self.right("acquisition")
+        allowed.update(
+            {
+                "created_at": "2026-08-28T09:00:00+03:00",
+                "rights_checked_at": "2026-08-28",
+                "rights_record_id": "right-acquisition-after-failure",
+                "access_basis": "Разрешение, появившееся после неудачи.",
+                "supersedes_rights_record_id": blocked["rights_record_id"],
+            }
+        )
+        storage = self.right("storage")
+        plan = self.plan(rights=[blocked, allowed, storage])
+        artifact = plan.artifacts[0]
+        failed_at = "2026-08-27T10:00:00+03:00"
+        failed_id = "retrieval:test:failed-only"
+        artifact["created_at"] = "2026-08-29T12:00:00+03:00"
+        artifact["updated_at"] = "2026-08-29T12:00:00+03:00"
+        artifact["retrievals"] = [
+            {
+                "retrieval_id": failed_id,
+                "retrieved_url": plan.works[0]["canonical_url"],
+                "retrieved_at": failed_at,
+                "response_metadata_sha256": "e" * 64,
+            }
+        ]
+        plan.retrieval_events = [
+            {
+                "schema_version": "retrieval-events-v1",
+                "retrieval_id": failed_id,
+                "created_at": failed_at,
+                "request_context_type": "artifact",
+                "request_context_id": artifact["artifact_record_id"],
+                "source_group_id": None,
+                "requested_url": plan.works[0]["canonical_url"],
+                "final_url": None,
+                "retrieved_at": failed_at,
+                "acquisition_method": "manual_download",
+                "acquisition_scope": "sample",
+                "rights_record_ids": [blocked["rights_record_id"]],
+                "http_status": 403,
+                "response_headers": {},
+                "response_metadata_sha256": "e" * 64,
+                "response_path": None,
+                "response_sha256": None,
+                "response_bytes": None,
+                "outcome": "failed",
+                "error_code": "http_403",
+                "error_detail": "Получение запрещено.",
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            ManifestError,
+            "не имеет состоявшегося события получения",
+        ):
+            self.store.commit(plan)
+
+        self.assertFalse(self.store.path_for("artifacts").exists())
+
     def test_prohibition_scoped_to_work_alias_blocks(self) -> None:
         """Запрет для прежнего псевдонима работы должен блокировать операцию."""
 
@@ -420,6 +757,69 @@ class ManifestStoreTests(unittest.TestCase):
             [self.plan(rights=[fulfilled, self.right("storage")])]
         )
         self.assertEqual(result.inserted["artifacts"], 1)
+
+    def test_condition_history_is_primary_for_conditional_right(self) -> None:
+        """Отдельное выполнение точного условия должно разрешать операцию."""
+
+        conditional = self.right("acquisition", status="conditional")
+        condition = "Получить письменное разрешение."
+        conditional["rights_conditions"] = [condition]
+        fulfilment = {
+            "schema_version": "condition-fulfilments-v1",
+            "fulfilment_id": "fulfilment:test:permission",
+            "created_at": TEST_TIMESTAMP,
+            "rights_record_id": conditional["rights_record_id"],
+            "condition": condition,
+            "subject_type": "source",
+            "subject_id": self.profile.source_id,
+            "status": "satisfied",
+            "satisfied_at": TEST_TIMESTAMP,
+            "expires_at": None,
+            "evidence_sha256": "e" * 64,
+            "supersedes_fulfilment_id": None,
+        }
+        plan = self.plan(rights=[conditional, self.right("storage")])
+        plan.condition_fulfilments.append(fulfilment)
+
+        result = self.store.commit(plan)
+
+        self.assertEqual(result.inserted["condition_fulfilments"], 1)
+        decisions = self.store.records("operation_decisions")
+        acquisition = [
+            item for item in decisions if item["operation"] == "acquisition"
+        ]
+        self.assertEqual(acquisition[0]["status"], "allowed")
+        self.assertEqual(
+            acquisition[0]["condition_fulfilment_ids"],
+            [fulfilment["fulfilment_id"]],
+        )
+
+    def test_condition_for_another_project_does_not_permit_operation(self) -> None:
+        """Выполнение условия чужого проекта не должно действовать в ruPhysBERT."""
+
+        conditional = self.right("acquisition", status="conditional")
+        condition = "Использовать только в согласованном проекте."
+        conditional["rights_conditions"] = [condition]
+        plan = self.plan(rights=[conditional, self.right("storage")])
+        plan.condition_fulfilments.append(
+            {
+                "schema_version": "condition-fulfilments-v1",
+                "fulfilment_id": "fulfilment:test:foreign-project",
+                "created_at": TEST_TIMESTAMP,
+                "rights_record_id": conditional["rights_record_id"],
+                "condition": condition,
+                "subject_type": "project",
+                "subject_id": "another-project",
+                "status": "satisfied",
+                "satisfied_at": TEST_TIMESTAMP,
+                "expires_at": None,
+                "evidence_sha256": "f" * 64,
+                "supersedes_fulfilment_id": None,
+            }
+        )
+
+        with self.assertRaises(ManifestError):
+            self.store.preflight([plan])
 
     def test_saved_artifact_requires_storage(self) -> None:
         """Сохранение артефакта должно требовать права на хранение."""
@@ -540,6 +940,739 @@ class ManifestStoreTests(unittest.TestCase):
         path = self.project_root / "manifests" / "artifacts.jsonl"
         for line in path.read_text(encoding="utf-8").splitlines():
             self.assertIsInstance(json.loads(line), dict)
+
+    def test_work_update_replaces_snapshot_with_matching_cas(self) -> None:
+        """Обновление с причиной и верным хешем должно заменить одну строку."""
+
+        self.store.commit(self.plan())
+        expected_hashes = self.store.snapshot_hashes()
+        updated = self.plan()
+        updated.works[0]["abstract"] = "Проверенная аннотация статьи."
+        updated.works[0]["updated_at"] = "2026-08-28T12:00:00+03:00"
+        work_id = updated.works[0]["work_id"]
+        updated.work_update_reasons[work_id] = "Добавлена проверенная аннотация."
+
+        result = self.store.commit(
+            updated,
+            expected_snapshot_hashes=expected_hashes,
+        )
+
+        self.assertEqual(result.updated["works"], 1)
+        self.assertEqual(
+            self.store.records("works")[0]["abstract"],
+            "Проверенная аннотация статьи.",
+        )
+        self.assertEqual(len(self.store.records("works")), 1)
+        self.assertEqual(len(self.store.records("work_revisions")), 2)
+
+    def test_stale_snapshot_hash_rejects_update_without_writes(self) -> None:
+        """Устаревший CAS-хеш не должен менять снимок или журнал ревизий."""
+
+        self.store.commit(self.plan())
+        previous_bytes = self.store.path_for("works").read_bytes()
+        previous_revision_count = len(self.store.records("work_revisions"))
+        updated = self.plan()
+        updated.works[0]["abstract"] = "Новая проверенная аннотация."
+        updated.works[0]["updated_at"] = "2026-08-28T12:00:00+03:00"
+        updated.work_update_reasons[updated.works[0]["work_id"]] = "Уточнение."
+
+        with self.assertRaises(ManifestConflictError):
+            self.store.commit(
+                updated,
+                expected_snapshot_hashes={"works": "0" * 64},
+            )
+
+        self.assertEqual(self.store.path_for("works").read_bytes(), previous_bytes)
+        self.assertEqual(
+            len(self.store.records("work_revisions")),
+            previous_revision_count,
+        )
+
+    def test_cas_wins_over_conflicting_concurrent_insert(self) -> None:
+        """Гонка вставки должна сообщаться как ошибка конкурентного снимка."""
+
+        expected_hashes = self.store.snapshot_hashes()
+        concurrent = self.plan(self.document(title="Название другого процесса"))
+        self.store.commit(concurrent)
+
+        with self.assertRaises(ManifestConcurrencyError):
+            self.store.commit(
+                self.plan(),
+                expected_snapshot_hashes=expected_hashes,
+            )
+
+    def test_artifact_update_creates_revision_and_new_decisions(self) -> None:
+        """Изменение артефакта должно оставить ревизию и решения операций."""
+
+        self.store.commit(self.plan())
+        initial_decisions = len(self.store.records("operation_decisions"))
+        updated = self.plan()
+        artifact = updated.artifacts[0]
+        artifact["qa_status"] = "passed"
+        artifact["updated_at"] = "2026-08-28T12:00:00+03:00"
+        updated.artifact_update_reasons[
+            artifact["artifact_record_id"]
+        ] = "Проверено качество текста."
+
+        result = self.store.commit(
+            updated,
+            expected_snapshot_hashes=self.store.snapshot_hashes(),
+        )
+
+        self.assertEqual(result.updated["artifacts"], 1)
+        self.assertEqual(len(self.store.records("artifact_revisions")), 2)
+        self.assertGreater(
+            len(self.store.records("operation_decisions")),
+            initial_decisions,
+        )
+
+    def test_inline_retrieval_is_migrated_to_history(self) -> None:
+        """Старый встроенный retrieval должен стать событием metadata_only."""
+
+        self.store.commit(self.plan())
+        events = self.store.records("retrieval_events")
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["outcome"], "metadata_only")
+        self.assertIsNone(events[0]["http_status"])
+        self.assertIsNone(events[0]["final_url"])
+
+    def test_late_doi_preserves_work_id_and_requires_verified_alias(self) -> None:
+        """Поздний DOI должен стать проверенным псевдонимом прежней работы."""
+
+        self.store.commit(self.plan())
+        updated = self.plan()
+        work = updated.works[0]
+        original_work_id = work["work_id"]
+        work["doi"] = "10.1000/late-doi"
+        work["work_aliases"] = ["doi:10.1000/late-doi"]
+        work["updated_at"] = "2026-08-28T12:00:00+03:00"
+        updated.work_update_reasons[original_work_id] = "Найден и проверен DOI."
+        retrieval_id = updated.artifacts[0]["retrievals"][0]["retrieval_id"]
+        updated.work_aliases.append(
+            {
+                "schema_version": "work-aliases-v1",
+                "alias_record_id": "alias:test:late-doi",
+                "created_at": "2026-08-28T12:00:00+03:00",
+                "work_id": original_work_id,
+                "alias_type": "doi",
+                "alias_value": "10.1000/late-doi",
+                "verified_at": "2026-08-28T12:00:00+03:00",
+                "evidence_sha256": "c" * 64,
+                "source_retrieval_id": retrieval_id,
+                "supersedes_alias_record_id": None,
+            }
+        )
+
+        self.store.commit(
+            updated,
+            expected_snapshot_hashes=self.store.snapshot_hashes(),
+        )
+
+        stored = self.store.records("works")[0]
+        self.assertEqual(stored["work_id"], original_work_id)
+        self.assertEqual(stored["doi"], "10.1000/late-doi")
+        self.assertEqual(len(self.store.records("work_aliases")), 1)
+
+    def test_late_edn_requires_verified_alias(self) -> None:
+        """Поздний EDN должен иметь отдельное проверенное происхождение."""
+
+        self.store.commit(self.plan())
+        updated = self.plan()
+        work = updated.works[0]
+        work["edn"] = "LATEEDN"
+        work["work_aliases"].append("edn:LATEEDN")
+        work["updated_at"] = "2026-08-28T12:00:00+03:00"
+        updated.work_update_reasons[work["work_id"]] = "Найден EDN."
+
+        with self.assertRaises(ManifestConflictError):
+            self.store.preflight(
+                [updated],
+                expected_snapshot_hashes=self.store.snapshot_hashes(),
+            )
+
+        retrieval_id = updated.artifacts[0]["retrievals"][0]["retrieval_id"]
+        updated.work_aliases.append(
+            {
+                "schema_version": "work-aliases-v1",
+                "alias_record_id": "alias:test:late-edn",
+                "created_at": "2026-08-28T12:00:00+03:00",
+                "work_id": work["work_id"],
+                "alias_type": "edn",
+                "alias_value": "LATEEDN",
+                "verified_at": "2026-08-28T12:00:00+03:00",
+                "evidence_sha256": "c" * 64,
+                "source_retrieval_id": retrieval_id,
+                "supersedes_alias_record_id": None,
+            }
+        )
+
+        self.store.commit(
+            updated,
+            expected_snapshot_hashes=self.store.snapshot_hashes(),
+        )
+
+        self.assertEqual(self.store.records("works")[0]["edn"], "LATEEDN")
+
+    def test_pending_identity_conflict_quarantines_work(self) -> None:
+        """Открытый конфликт должен сохранять прежнее поле и включать карантин."""
+
+        self.store.commit(self.plan())
+        updated = self.plan()
+        work = updated.works[0]
+        work["eligibility_status"] = "quarantined"
+        work["exclusion_reason"] = "Открытый конфликт названия."
+        work["updated_at"] = "2026-08-28T12:00:00+03:00"
+        updated.work_update_reasons[work["work_id"]] = "Обнаружен конфликт."
+        retrieval_id = updated.artifacts[0]["retrievals"][0]["retrieval_id"]
+        updated.identity_conflicts.append(
+            {
+                "schema_version": "identity-conflicts-v1",
+                "conflict_id": "conflict:test:title",
+                "created_at": "2026-08-28T12:00:00+03:00",
+                "work_id": work["work_id"],
+                "field": "title",
+                "existing_value": work["title"],
+                "candidate_value": "Противоречащее название",
+                "source_retrieval_ids": [retrieval_id],
+                "status": "pending",
+                "resolution_reason": None,
+                "resolved_at": None,
+            }
+        )
+
+        self.store.commit(
+            updated,
+            expected_snapshot_hashes=self.store.snapshot_hashes(),
+        )
+
+        stored = self.store.records("works")[0]
+        self.assertEqual(stored["eligibility_status"], "quarantined")
+        self.assertEqual(stored["title"], "Квантовые свойства плазмы")
+
+    def test_retrieval_response_blob_can_exist_without_artifact(self) -> None:
+        """Сырой ответ RSS может принадлежать событию без artifact-записи."""
+
+        body = b"<rss version='2.0'></rss>"
+        digest = sha256_bytes(body)
+        path = f"data/raw/responses/{digest}.xml"
+        acquisition = self.right("acquisition")
+        storage = self.right("storage")
+        event = {
+            "schema_version": "retrieval-events-v1",
+            "retrieval_id": "retrieval:test:rss-response",
+            "created_at": TEST_TIMESTAMP,
+            "request_context_type": "source",
+            "request_context_id": self.profile.source_id,
+            "source_group_id": self.profile.source_group_id,
+            "requested_url": "https://example.invalid/feed.xml",
+            "final_url": "https://example.invalid/feed.xml",
+            "retrieved_at": TEST_TIMESTAMP,
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "rights_record_ids": [
+                acquisition["rights_record_id"],
+                storage["rights_record_id"],
+            ],
+            "http_status": 200,
+            "response_headers": {"content-type": "application/rss+xml"},
+            "response_metadata_sha256": "d" * 64,
+            "response_path": path,
+            "response_sha256": digest,
+            "response_bytes": len(body),
+            "outcome": "succeeded",
+            "error_code": None,
+            "error_detail": None,
+        }
+        plan = ManifestPlan(
+            rights=[acquisition, storage],
+            retrieval_events=[event],
+            blobs=[PlannedBlob(path, body, digest)],
+        )
+
+        result = self.store.commit(plan)
+
+        self.assertEqual(result.inserted["retrieval_events"], 1)
+        self.assertEqual((self.project_root / path).read_bytes(), body)
+        retrieval_decisions = [
+            item
+            for item in self.store.records("operation_decisions")
+            if item["subject_type"] == "retrieval"
+            and item["subject_id"] == event["retrieval_id"]
+        ]
+        self.assertEqual(
+            {item["operation"] for item in retrieval_decisions},
+            {"acquisition", "storage"},
+        )
+        self.assertTrue(
+            all(item["status"] == "allowed" for item in retrieval_decisions)
+        )
+
+    def test_source_event_accepts_source_group_rights(self) -> None:
+        """Событие источника должно наследовать права его группы."""
+
+        body = b"<rss version='2.0'></rss>"
+        digest = sha256_bytes(body)
+        path = f"data/raw/responses/{digest}.xml"
+        acquisition = self.right("acquisition")
+        storage = self.right("storage")
+
+        for right in (acquisition, storage):
+            right["scope_type"] = "source_group"
+            right["scope_id"] = self.profile.source_group_id
+
+        event = {
+            "schema_version": "retrieval-events-v1",
+            "retrieval_id": "retrieval:test:source-group-rights",
+            "created_at": TEST_TIMESTAMP,
+            "request_context_type": "source",
+            "request_context_id": self.profile.source_id,
+            "source_group_id": self.profile.source_group_id,
+            "requested_url": "https://example.invalid/feed.xml",
+            "final_url": "https://example.invalid/feed.xml",
+            "retrieved_at": TEST_TIMESTAMP,
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "rights_record_ids": [
+                acquisition["rights_record_id"],
+                storage["rights_record_id"],
+            ],
+            "http_status": 200,
+            "response_headers": {"content-type": "application/rss+xml"},
+            "response_metadata_sha256": "d" * 64,
+            "response_path": path,
+            "response_sha256": digest,
+            "response_bytes": len(body),
+            "outcome": "succeeded",
+            "error_code": None,
+            "error_detail": None,
+        }
+        plan = ManifestPlan(
+            rights=[acquisition, storage],
+            retrieval_events=[event],
+            blobs=[PlannedBlob(path, body, digest)],
+        )
+
+        result = self.store.commit(plan)
+
+        self.assertEqual(result.inserted["retrieval_events"], 1)
+        self.assertTrue(self.store.audit().ok)
+
+    def test_late_storage_prohibition_blocks_retained_response(self) -> None:
+        """Поздний запрет хранения должен учитывать ответ без артефакта."""
+
+        body = b"<rss version='2.0'></rss>"
+        digest = sha256_bytes(body)
+        path = f"data/raw/responses/{digest}.xml"
+        acquisition = self.right("acquisition")
+        storage = self.right("storage")
+        event = {
+            "schema_version": "retrieval-events-v1",
+            "retrieval_id": "retrieval:test:retained-response",
+            "created_at": TEST_TIMESTAMP,
+            "request_context_type": "source",
+            "request_context_id": self.profile.source_id,
+            "source_group_id": self.profile.source_group_id,
+            "requested_url": "https://example.invalid/feed.xml",
+            "final_url": "https://example.invalid/feed.xml",
+            "retrieved_at": TEST_TIMESTAMP,
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "rights_record_ids": [
+                acquisition["rights_record_id"],
+                storage["rights_record_id"],
+            ],
+            "http_status": 200,
+            "response_headers": {"content-type": "application/rss+xml"},
+            "response_metadata_sha256": "d" * 64,
+            "response_path": path,
+            "response_sha256": digest,
+            "response_bytes": len(body),
+            "outcome": "succeeded",
+            "error_code": None,
+            "error_detail": None,
+        }
+        self.store.commit(
+            ManifestPlan(
+                rights=[acquisition, storage],
+                retrieval_events=[event],
+                blobs=[PlannedBlob(path, body, digest)],
+            )
+        )
+        prohibited = self.right("storage", status="prohibited")
+        prohibited.update(
+            {
+                "created_at": "2026-08-28T12:00:00+03:00",
+                "rights_checked_at": "2026-08-28",
+                "rights_record_id": "right-storage-later-blocked",
+                "access_basis": "Поздний запрет хранения ответа.",
+            }
+        )
+
+        with self.assertRaises(ManifestError):
+            self.store.commit(ManifestPlan(rights=[prohibited]))
+
+        rights_ids = {
+            item["rights_record_id"] for item in self.store.records("rights")
+        }
+        self.assertNotIn(prohibited["rights_record_id"], rights_ids)
+        self.assertEqual((self.project_root / path).read_bytes(), body)
+        self.assertTrue(self.store.audit().ok)
+
+    def test_commit_rolls_back_registries_after_snapshot_failure(self) -> None:
+        """Ошибка второго снимка не должна оставлять журналы и первый снимок."""
+
+        original_replace = ManifestStore._atomic_replace_snapshot
+        plan = self.plan()
+        blob_path = self.project_root / plan.blobs[0].relative_path
+
+        def fail_on_artifacts(
+            path: Path,
+            kind: str,
+            records: dict[str, dict[str, Any]],
+        ) -> None:
+            """Имитировать сбой после успешной записи works."""
+
+            if kind == "artifacts":
+                raise OSError("Синтетический сбой записи artifacts")
+
+            original_replace(path, kind, records)
+
+        with mock.patch.object(
+            ManifestStore,
+            "_atomic_replace_snapshot",
+            side_effect=fail_on_artifacts,
+        ):
+            with self.assertRaises(OSError):
+                self.store.commit(plan)
+
+        for kind in (
+            "works",
+            "artifacts",
+            "rights",
+            "work_revisions",
+            "artifact_revisions",
+            "retrieval_events",
+            "operation_decisions",
+        ):
+            self.assertEqual(self.store.records(kind), [])
+
+        self.assertFalse(blob_path.exists())
+
+    def test_artifact_bytes_are_immutable_after_materialization(self) -> None:
+        """Новые байты должны получать новую запись артефакта."""
+
+        self.store.commit(self.plan())
+        updated = self.plan()
+        artifact = updated.artifacts[0]
+        artifact["sha256"] = "f" * 64
+        artifact["artifact_id"] = f"sha256:{artifact['sha256']}"
+        artifact["updated_at"] = "2026-08-28T12:00:00+03:00"
+        updated.artifact_update_reasons[
+            artifact["artifact_record_id"]
+        ] = "Попытка заменить байты."
+
+        with self.assertRaises(ManifestConflictError):
+            self.store.preflight(
+                [updated],
+                expected_snapshot_hashes=self.store.snapshot_hashes(),
+            )
+
+    def test_rollback_keeps_preexisting_blob(self) -> None:
+        """Откат не должен удалять совпадающий blob, существовавший до commit."""
+
+        plan = self.plan()
+        blob = plan.blobs[0]
+        blob_path = self.project_root / blob.relative_path
+        blob_path.parent.mkdir(parents=True, exist_ok=True)
+        blob_path.write_bytes(blob.data)
+
+        with mock.patch.object(
+            ManifestStore,
+            "_atomic_replace_snapshot",
+            side_effect=OSError("Синтетический сбой снимка"),
+        ):
+            with self.assertRaises(OSError):
+                self.store.commit(plan)
+
+        self.assertEqual(blob_path.read_bytes(), blob.data)
+
+    def test_artifact_event_must_be_materialized_in_retrievals(self) -> None:
+        """Событие контекста artifact должно появиться в текущем снимке."""
+
+        plan = self.plan()
+        event = {
+            "schema_version": "retrieval-events-v1",
+            "retrieval_id": "retrieval:test:not-materialized",
+            "created_at": TEST_TIMESTAMP,
+            "request_context_type": "artifact",
+            "request_context_id": plan.artifacts[0]["artifact_record_id"],
+            "source_group_id": None,
+            "requested_url": "https://example.invalid/second",
+            "final_url": None,
+            "retrieved_at": TEST_TIMESTAMP,
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "rights_record_ids": ["right-acquisition"],
+            "http_status": None,
+            "response_headers": {},
+            "response_metadata_sha256": "e" * 64,
+            "response_path": None,
+            "response_sha256": None,
+            "response_bytes": None,
+            "outcome": "metadata_only",
+            "error_code": None,
+            "error_detail": None,
+        }
+        plan.retrieval_events.append(event)
+
+        with self.assertRaises(ManifestError):
+            self.store.preflight([plan])
+
+    def test_successful_retrieval_requires_permitting_acquisition_right(self) -> None:
+        """Запрещающее право не должно разрешать успешное получение ответа."""
+
+        body = b"response"
+        digest = sha256_bytes(body)
+        path = f"data/raw/responses/{digest}.bin"
+        acquisition = self.right("acquisition", status="prohibited")
+        storage = self.right("storage")
+        event = {
+            "schema_version": "retrieval-events-v1",
+            "retrieval_id": "retrieval:test:prohibited",
+            "created_at": TEST_TIMESTAMP,
+            "request_context_type": "source",
+            "request_context_id": self.profile.source_id,
+            "source_group_id": self.profile.source_group_id,
+            "requested_url": "https://example.invalid/response",
+            "final_url": "https://example.invalid/response",
+            "retrieved_at": TEST_TIMESTAMP,
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+            "rights_record_ids": [
+                acquisition["rights_record_id"],
+                storage["rights_record_id"],
+            ],
+            "http_status": 200,
+            "response_headers": {},
+            "response_metadata_sha256": "f" * 64,
+            "response_path": path,
+            "response_sha256": digest,
+            "response_bytes": len(body),
+            "outcome": "succeeded",
+            "error_code": None,
+            "error_detail": None,
+        }
+
+        with self.assertRaises(ManifestError):
+            self.store.preflight(
+                [
+                    ManifestPlan(
+                        rights=[acquisition, storage],
+                        retrieval_events=[event],
+                        blobs=[PlannedBlob(path, body, digest)],
+                    )
+                ]
+            )
+
+    def test_future_condition_fulfilment_is_rejected(self) -> None:
+        """Будущее выполнение условия не должно разрешать операцию сейчас."""
+
+        conditional = self.right("acquisition", status="conditional")
+        condition = "Получить согласование."
+        conditional["rights_conditions"] = [condition]
+        plan = self.plan(rights=[conditional, self.right("storage")])
+        plan.condition_fulfilments.append(
+            {
+                "schema_version": "condition-fulfilments-v1",
+                "fulfilment_id": "fulfilment:test:future",
+                "created_at": "2099-01-01T00:00:00+00:00",
+                "rights_record_id": conditional["rights_record_id"],
+                "condition": condition,
+                "subject_type": "project",
+                "subject_id": "ruphysbert",
+                "status": "satisfied",
+                "satisfied_at": "2099-01-01T00:00:00+00:00",
+                "expires_at": None,
+                "evidence_sha256": "a" * 64,
+                "supersedes_fulfilment_id": None,
+            }
+        )
+
+        with self.assertRaises(ManifestError):
+            self.store.preflight([plan])
+
+    def test_manual_allowed_decision_must_match_controlling_right(self) -> None:
+        """Ручной allowed нельзя обосновать правом на другую операцию."""
+
+        plan = self.plan()
+        storage = next(
+            right for right in plan.rights if right["operation"] == "storage"
+        )
+        context = {
+            "acquisition_method": "manual_download",
+            "acquisition_scope": "sample",
+        }
+        plan.operation_decisions.append(
+            {
+                "schema_version": "operation-decisions-v1",
+                "decision_id": "decision:test:forged",
+                "created_at": TEST_TIMESTAMP,
+                "decision_key": "forged:artifact:acquisition",
+                "operation": "acquisition",
+                "derivative_scope": None,
+                "subject_type": "artifact",
+                "subject_id": plan.artifacts[0]["artifact_record_id"],
+                "decision_at": TEST_TIMESTAMP,
+                "context": context,
+                "context_sha256": sha256_bytes(
+                    canonical_json(context).encode("utf-8")
+                ),
+                "rights_record_ids": [storage["rights_record_id"]],
+                "rights_snapshot_sha256": sha256_bytes(
+                    f"{canonical_json(storage)}\n".encode("utf-8")
+                ),
+                "condition_fulfilment_ids": [],
+                "supersedes_decision_id": None,
+                "status": "allowed",
+            }
+        )
+
+        with self.assertRaises(ManifestError):
+            self.store.preflight([plan])
+
+    def test_pending_identity_conflict_can_be_resolved_append_only(self) -> None:
+        """Новое решение должно закрывать прежнюю pending-запись."""
+
+        self.store.commit(self.plan())
+        pending_plan = self.plan()
+        pending_work = pending_plan.works[0]
+        pending_work["eligibility_status"] = "quarantined"
+        pending_work["exclusion_reason"] = "Открытый конфликт названия."
+        pending_work["updated_at"] = "2026-08-28T12:00:00+03:00"
+        pending_plan.work_update_reasons[pending_work["work_id"]] = "Конфликт."
+        retrieval_id = pending_plan.artifacts[0]["retrievals"][0]["retrieval_id"]
+        pending_plan.identity_conflicts.append(
+            {
+                "schema_version": "identity-conflicts-v1",
+                "conflict_id": "conflict:test:pending-title",
+                "created_at": "2026-08-28T12:00:00+03:00",
+                "work_id": pending_work["work_id"],
+                "field": "title",
+                "existing_value": pending_work["title"],
+                "candidate_value": "Уточнённое название",
+                "source_retrieval_ids": [retrieval_id],
+                "status": "pending",
+                "resolution_reason": None,
+                "resolved_at": None,
+            }
+        )
+        self.store.commit(
+            pending_plan,
+            expected_snapshot_hashes=self.store.snapshot_hashes(),
+        )
+
+        resolved_plan = self.plan()
+        resolved_work = resolved_plan.works[0]
+        resolved_work["title"] = "Уточнённое название"
+        resolved_work["eligibility_status"] = "pending"
+        resolved_work["exclusion_reason"] = None
+        resolved_work["updated_at"] = "2026-08-29T12:00:00+03:00"
+        resolved_plan.work_update_reasons[
+            resolved_work["work_id"]
+        ] = "Конфликт разрешён экспертом."
+        resolved_plan.identity_conflicts.append(
+            {
+                "schema_version": "identity-conflicts-v1",
+                "conflict_id": "conflict:test:resolved-title",
+                "created_at": "2026-08-29T12:00:00+03:00",
+                "work_id": resolved_work["work_id"],
+                "field": "title",
+                "existing_value": "Квантовые свойства плазмы",
+                "candidate_value": "Уточнённое название",
+                "source_retrieval_ids": [retrieval_id],
+                "status": "resolved_replace_current",
+                "resolution_reason": "Проверена карточка издателя.",
+                "resolved_at": "2026-08-29T12:00:00+03:00",
+            }
+        )
+        self.store.commit(
+            resolved_plan,
+            expected_snapshot_hashes=self.store.snapshot_hashes(),
+        )
+
+        self.assertEqual(
+            self.store.records("works")[0]["title"],
+            "Уточнённое название",
+        )
+        self.assertTrue(self.store.audit().ok)
+
+    def test_revision_order_uses_absolute_time(self) -> None:
+        """Разные UTC-offset должны сортироваться по абсолютному времени."""
+
+        self.store.commit(self.plan())
+        updated = self.plan()
+        work = updated.works[0]
+        work["abstract"] = "Добавленная аннотация."
+        work["updated_at"] = "2026-08-27T09:30:00+00:00"
+        updated.work_update_reasons[work["work_id"]] = "Добавлена аннотация."
+
+        self.store.commit(
+            updated,
+            expected_snapshot_hashes=self.store.snapshot_hashes(),
+        )
+
+        self.assertTrue(self.store.audit().ok)
+
+    def test_freeze_detects_unlisted_file(self) -> None:
+        """Лишний файл должен нарушать неизменяемость каталога фиксации."""
+
+        self.store.commit(self.plan())
+        result = self.store.freeze("corpus-extra-file", self.store.snapshot_hashes())
+        (result.path / "unexpected.txt").write_text("changed", encoding="utf-8")
+
+        self.assertFalse(self.store.verify_frozen("corpus-extra-file").ok)
+
+    def test_rights_supersedes_cannot_cross_derivative_scope(self) -> None:
+        """Решение о метриках не должно замещать решение о выпуске набора."""
+
+        previous = self.right("acquisition")
+        previous.update(
+            {
+                "rights_record_id": "right-release-metrics",
+                "operation": "derivatives_release",
+                "acquisition_method": None,
+                "acquisition_scope": None,
+                "derivative_scope": ["aggregate_metrics"],
+                "created_at": "2026-08-27T11:00:00+03:00",
+            }
+        )
+        successor = copy.deepcopy(previous)
+        successor.update(
+            {
+                "rights_record_id": "right-release-dataset",
+                "derivative_scope": ["dataset"],
+                "created_at": TEST_TIMESTAMP,
+                "supersedes_rights_record_id": previous["rights_record_id"],
+            }
+        )
+
+        with self.assertRaises(ManifestError):
+            self.store.preflight([ManifestPlan(rights=[previous, successor])])
+
+    def test_freeze_is_immutable_and_detects_tampering(self) -> None:
+        """Фиксация должна быть повторяемой и обнаруживать изменение файлов."""
+
+        self.store.commit(self.plan())
+        result = self.store.freeze("corpus-test-v1", self.store.snapshot_hashes())
+
+        self.assertTrue(self.store.verify_frozen("corpus-test-v1").ok)
+
+        with self.assertRaises(ManifestConflictError):
+            self.store.freeze("corpus-test-v1", self.store.snapshot_hashes())
+
+        (result.path / "works.jsonl").write_bytes(b"changed\n")
+        self.assertFalse(self.store.verify_frozen("corpus-test-v1").ok)
 
 
 if __name__ == "__main__":

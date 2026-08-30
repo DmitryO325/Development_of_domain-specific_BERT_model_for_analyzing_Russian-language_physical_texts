@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:condition-fulfilments:v1",
+  "title": "Неизменяемый журнал выполнения условий прав",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fulfilment_id",
+    "created_at",
+    "rights_record_id",
+    "condition",
+    "subject_type",
+    "subject_id",
+    "status",
+    "satisfied_at",
+    "expires_at",
+    "evidence_sha256",
+    "supersedes_fulfilment_id"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "condition-fulfilments-v1"},
+    "fulfilment_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "rights_record_id": {"type": "string", "minLength": 1},
+    "condition": {"type": "string", "minLength": 1},
+    "subject_type": {
+      "type": "string",
+      "enum": ["project", "source", "work", "artifact", "retrieval"]
+    },
+    "subject_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["satisfied", "revoked"]},
+    "satisfied_at": {"type": "string", "format": "date-time"},
+    "expires_at": {
+      "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
+    },
+    "evidence_sha256": {"$ref": "#/$defs/sha256"},
+    "supersedes_fulfilment_id": {"type": ["string", "null"], "minLength": 1}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "revoked"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "supersedes_fulfilment_id": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  ]
+}

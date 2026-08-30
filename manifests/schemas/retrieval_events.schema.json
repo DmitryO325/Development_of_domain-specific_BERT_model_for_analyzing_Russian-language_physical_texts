@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:retrieval-events:v1",
+  "title": "Неизменяемый журнал событий получения",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "retrieval_id",
+    "created_at",
+    "request_context_type",
+    "request_context_id",
+    "source_group_id",
+    "requested_url",
+    "final_url",
+    "retrieved_at",
+    "acquisition_method",
+    "acquisition_scope",
+    "rights_record_ids",
+    "http_status",
+    "response_headers",
+    "response_metadata_sha256",
+    "response_path",
+    "response_sha256",
+    "response_bytes",
+    "outcome",
+    "error_code",
+    "error_detail"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "retrieval-events-v1"},
+    "retrieval_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "request_context_type": {
+      "type": "string",
+      "enum": ["source", "work", "artifact"]
+    },
+    "request_context_id": {"type": "string", "minLength": 1},
+    "source_group_id": {"type": ["string", "null"], "minLength": 1},
+    "requested_url": {"type": "string", "format": "uri"},
+    "final_url": {
+      "anyOf": [{"type": "string", "format": "uri"}, {"type": "null"}]
+    },
+    "retrieved_at": {"type": "string", "format": "date-time"},
+    "acquisition_method": {
+      "type": "string",
+      "enum": ["manual_download", "api", "crawler", "platform_export", "other"]
+    },
+    "acquisition_scope": {
+      "type": "string",
+      "enum": ["single", "sample", "bulk"]
+    },
+    "rights_record_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "http_status": {
+      "anyOf": [
+        {"type": "integer", "minimum": 100, "maximum": 599},
+        {"type": "null"}
+      ]
+    },
+    "response_headers": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9-]*$"},
+      "additionalProperties": {"type": "string"}
+    },
+    "response_metadata_sha256": {"$ref": "#/$defs/sha256"},
+    "response_path": {"type": ["string", "null"], "minLength": 1},
+    "response_sha256": {
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "response_bytes": {"type": ["integer", "null"], "minimum": 0},
+    "outcome": {
+      "type": "string",
+      "enum": ["succeeded", "metadata_only", "failed"]
+    },
+    "error_code": {"type": ["string", "null"], "minLength": 1},
+    "error_detail": {"type": ["string", "null"], "minLength": 1}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"request_context_type": {"const": "source"}},
+        "required": ["request_context_type"]
+      },
+      "then": {
+        "properties": {"source_group_id": {"type": "string", "minLength": 1}}
+      },
+      "else": {
+        "properties": {"source_group_id": {"type": "null"}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"outcome": {"const": "succeeded"}},
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": {
+          "final_url": {"type": "string", "format": "uri"},
+          "http_status": {"type": "integer", "minimum": 200, "maximum": 399},
+          "response_path": {"type": "string", "minLength": 1},
+          "response_sha256": {"$ref": "#/$defs/sha256"},
+          "response_bytes": {"type": "integer", "minimum": 0},
+          "error_code": {"type": "null"},
+          "error_detail": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"outcome": {"const": "metadata_only"}},
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": {
+          "final_url": {"type": "null"},
+          "http_status": {"type": "null"},
+          "response_headers": {"type": "object", "maxProperties": 0},
+          "response_path": {"type": "null"},
+          "response_sha256": {"type": "null"},
+          "response_bytes": {"type": "null"},
+          "error_code": {"type": "null"},
+          "error_detail": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"outcome": {"const": "failed"}},
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": {
+          "response_path": {"type": "null"},
+          "response_sha256": {"type": "null"},
+          "response_bytes": {"type": "null"},
+          "error_code": {"type": "string", "minLength": 1},
+          "error_detail": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  ]
+}

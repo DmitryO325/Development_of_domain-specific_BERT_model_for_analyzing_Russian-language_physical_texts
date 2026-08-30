@@ -1,0 +1,29 @@
+{
+  "schema_version": "frozen-manifest-v1",
+  "version": "corpus-demo-v1",
+  "created_at": "2026-08-30T13:00:00+03:00",
+  "snapshot_hashes": {
+    "works": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifacts": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "rights": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "work_revisions": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "artifact_revisions": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "retrieval_events": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "work_aliases": "1111111111111111111111111111111111111111111111111111111111111111",
+    "identity_conflicts": "2222222222222222222222222222222222222222222222222222222222222222",
+    "operation_decisions": "3333333333333333333333333333333333333333333333333333333333333333",
+    "condition_fulfilments": "4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "files": [
+    {"path": "works.jsonl", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bytes": 1024, "records": 1},
+    {"path": "artifacts.jsonl", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bytes": 1536, "records": 1},
+    {"path": "rights.jsonl", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "bytes": 2048, "records": 4},
+    {"path": "work_revisions.jsonl", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "bytes": 512, "records": 1},
+    {"path": "artifact_revisions.jsonl", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "bytes": 512, "records": 1},
+    {"path": "retrieval_events.jsonl", "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "bytes": 768, "records": 1},
+    {"path": "work_aliases.jsonl", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "bytes": 384, "records": 1},
+    {"path": "identity_conflicts.jsonl", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "bytes": 512, "records": 1},
+    {"path": "operation_decisions.jsonl", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "bytes": 640, "records": 1},
+    {"path": "condition_fulfilments.jsonl", "sha256": "4444444444444444444444444444444444444444444444444444444444444444", "bytes": 512, "records": 1}
+  ]
+}
