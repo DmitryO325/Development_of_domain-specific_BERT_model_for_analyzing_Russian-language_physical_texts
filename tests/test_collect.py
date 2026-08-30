@@ -29,6 +29,7 @@ class BaseCollectionTests(unittest.TestCase):
 
     def test_fetch_bytes_retries_temporary_error_with_backoff(self) -> None:
         """Временная сетевая ошибка должна приводить к повтору."""
+
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b"ok"
         with (
@@ -50,6 +51,7 @@ class BaseCollectionTests(unittest.TestCase):
 
     def test_fetch_bytes_does_not_retry_http_404(self) -> None:
         """Постоянная HTTP-ошибка не должна повторяться."""
+
         response = MagicMock()
         error = urllib.error.HTTPError(
             "https://example.test/missing",
@@ -72,6 +74,7 @@ class BaseCollectionTests(unittest.TestCase):
 
     def test_fetch_bytes_retries_incomplete_response(self) -> None:
         """Оборванное чтение HTTP-ответа должно повторяться."""
+
         broken_response = MagicMock()
         broken_response.__enter__.return_value.read.side_effect = IncompleteRead(
             b"partial", 100
@@ -98,6 +101,7 @@ class BaseCollectionTests(unittest.TestCase):
 
     def test_fetch_bytes_retries_other_http_protocol_errors(self) -> None:
         """Временная ошибка HTTP-протокола должна повторяться."""
+
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b"ok"
         with (
@@ -114,6 +118,7 @@ class BaseCollectionTests(unittest.TestCase):
 
     def test_fetch_bytes_validates_options(self) -> None:
         """Недопустимые параметры должны давать понятную ошибку."""
+
         with self.assertRaises(ValueError):
             fetch_bytes("https://example.test", retries=0)
         with self.assertRaises(ValueError):
@@ -123,6 +128,7 @@ class BaseCollectionTests(unittest.TestCase):
 
     def test_html_to_text_handles_uppercase_closing_tags(self) -> None:
         """Регистр HTML-тегов не должен влиять на границы строк."""
+
         self.assertEqual(html_to_text("<P>Первая</P><P>Вторая</P>"), "Первая\nВторая")
 
 
@@ -131,6 +137,7 @@ class PdfTextTests(unittest.TestCase):
 
     def test_ufn_article_path_maps_to_pdf_url(self) -> None:
         """Путь статьи УФН должен преобразовываться в точный PDF-адрес."""
+
         self.assertEqual(
             pdf_url_from_article_path("/ru/articles/2026/5/a/"),
             "https://ufn.ru/ufn2026/ufn2026_5/Russian/r265a.pdf",
@@ -139,6 +146,7 @@ class PdfTextTests(unittest.TestCase):
 
     def test_download_pdf_waits_before_request(self) -> None:
         """Заданная пауза должна применяться до сетевого запроса."""
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             destination = Path(temporary_directory) / "article.pdf"
             with (
@@ -158,6 +166,7 @@ class PdfTextTests(unittest.TestCase):
 
     def test_pdf_filename_ignores_query_and_fragment(self) -> None:
         """Параметры URL не должны попадать в имя файла."""
+
         self.assertEqual(
             pdf_filename("https://example.test/a.pdf?download=1#page=2"),
             "a.pdf",
@@ -165,6 +174,7 @@ class PdfTextTests(unittest.TestCase):
 
     def test_sidecar_name_matches_reported_method(self) -> None:
         """Имя `.txt` должно совпадать с возвращённым методом."""
+
         readable_text = "Это читаемый русский физический текст. " * 10
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -185,19 +195,26 @@ class PdfTextTests(unittest.TestCase):
 
     def test_invalid_cache_is_downloaded_again(self) -> None:
         """HTML-файл большого размера не должен считаться PDF-кэшем."""
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_dir = Path(temporary_directory)
             cached = cache_dir / "article.pdf"
             cached.write_bytes(b"<html>" + b"x" * 2000)
 
-            def fake_download(_url: str, destination: Path, **_kwargs: object) -> Path:
+            def _fake_download(
+                _source_url: str,
+                destination: Path,
+                **_options: object,
+            ) -> Path:
+                """Записать корректный тестовый PDF вместо сетевой загрузки."""
+
                 destination.write_bytes(b"%PDF" + b"x" * 2000)
                 return destination
 
             with (
                 patch(
                     "src.collect.pdf_text.download_pdf",
-                    side_effect=fake_download,
+                    side_effect=_fake_download,
                 ) as download,
                 patch(
                     "src.collect.pdf_text.extract_best_text",
@@ -214,11 +231,13 @@ class PdfTextTests(unittest.TestCase):
 
     def test_only_boundary_page_numbers_are_removed(self) -> None:
         """Числа внутри текста нельзя принимать за колонтитулы."""
+
         text = "12\nНачало\n2026\n42\nКонец\n13"
         self.assertEqual(_clean_pdf_lines(text), "Начало\n2026\n42\nКонец")
 
     def test_damaged_cached_pdf_is_downloaded_again(self) -> None:
         """Повреждённый PDF с верной сигнатурой нужно заменить."""
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_dir = Path(temporary_directory)
             cached = cache_dir / "article.pdf"
@@ -241,10 +260,17 @@ class PdfTextTests(unittest.TestCase):
 
     def test_same_filename_from_different_urls_uses_distinct_cache_paths(self) -> None:
         """Разные URL с одним именем не должны затирать PDF друг друга."""
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_dir = Path(temporary_directory)
 
-            def fake_download(_url: str, destination: Path, **_kwargs: object) -> Path:
+            def _fake_download(
+                _source_url: str,
+                destination: Path,
+                **_options: object,
+            ) -> Path:
+                """Записать тестовый PDF по выбранному пути кэша."""
+
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(b"%PDF\ncontent\n%%EOF")
                 return destination
@@ -252,7 +278,7 @@ class PdfTextTests(unittest.TestCase):
             with (
                 patch(
                     "src.collect.pdf_text.download_pdf",
-                    side_effect=fake_download,
+                    side_effect=_fake_download,
                 ),
                 patch(
                     "src.collect.pdf_text.extract_best_text",
@@ -277,8 +303,9 @@ class RssScraperTests(unittest.TestCase):
     """Проверки RSS 2.0 и Atom без сетевых запросов."""
 
     def test_parses_namespaced_atom_entry(self) -> None:
-        """Поля Atom должны разбираться вместе с namespace."""
-        atom = b"""<?xml version="1.0" encoding="utf-8"?>
+        """Поля Atom должны разбираться вместе с пространством имён."""
+
+        atom_xml = b"""<?xml version="1.0" encoding="utf-8"?>
         <feed xmlns="http://www.w3.org/2005/Atom">
           <entry>
             <title>Quantum result</title>
@@ -289,7 +316,7 @@ class RssScraperTests(unittest.TestCase):
             <category term="quantum physics" />
           </entry>
         </feed>"""
-        with patch("src.collect.rss_feed.fetch_bytes", return_value=atom):
+        with patch("src.collect.rss_feed.fetch_bytes", return_value=atom_xml):
             documents = RssScraper(delay_seconds=0).parse_feed(
                 "https://example.test/feed.atom"
             )
@@ -303,8 +330,13 @@ class RssScraperTests(unittest.TestCase):
 
     def test_zero_limit_returns_no_documents(self) -> None:
         """Нулевой лимит должен давать пустой результат."""
-        rss = b"<rss><channel><item><link>https://example.test/a</link></item></channel></rss>"
-        with patch("src.collect.rss_feed.fetch_bytes", return_value=rss) as fetch:
+
+        rss_xml = (
+            b"<rss><channel><item><link>"
+            b"https://example.test/a"
+            b"</link></item></channel></rss>"
+        )
+        with patch("src.collect.rss_feed.fetch_bytes", return_value=rss_xml) as fetch:
             documents = RssScraper(delay_seconds=0).parse_feed(
                 "https://example.test/feed.xml",
                 limit=0,
@@ -314,7 +346,8 @@ class RssScraperTests(unittest.TestCase):
 
     def test_atom_xhtml_preserves_paragraph_boundary(self) -> None:
         """Соседние XHTML-абзацы Atom не должны склеиваться."""
-        atom = b"""<feed xmlns="http://www.w3.org/2005/Atom">
+
+        atom_xml = b"""<feed xmlns="http://www.w3.org/2005/Atom">
           <entry>
             <title>Physics</title>
             <link href="https://example.test/article" />
@@ -325,7 +358,7 @@ class RssScraperTests(unittest.TestCase):
             </content>
           </entry>
         </feed>"""
-        with patch("src.collect.rss_feed.fetch_bytes", return_value=atom):
+        with patch("src.collect.rss_feed.fetch_bytes", return_value=atom_xml):
             document = RssScraper(delay_seconds=0).parse_feed(
                 "https://example.test/feed.atom"
             )[0]
@@ -334,6 +367,7 @@ class RssScraperTests(unittest.TestCase):
 
     def test_rejects_dtd_and_entities(self) -> None:
         """Внешняя RSS-лента не должна разбирать DTD и сущности."""
+
         unsafe_xml = b"<!DOCTYPE rss [<!ENTITY x 'value'>]><rss>&x;</rss>"
         with (
             patch("src.collect.rss_feed.fetch_bytes", return_value=unsafe_xml),
@@ -343,6 +377,7 @@ class RssScraperTests(unittest.TestCase):
 
     def test_rejects_utf16_dtd_and_entities(self) -> None:
         """Защиту от XML-сущностей нельзя обходить кодировкой UTF-16."""
+
         unsafe_xml = (
             '<?xml version="1.0" encoding="UTF-16"?>'
             '<!DOCTYPE rss [<!ENTITY x "value">]><rss>&x;</rss>'
@@ -355,6 +390,7 @@ class RssScraperTests(unittest.TestCase):
 
     def test_default_feeds_continue_after_unknown_xml_encoding(self) -> None:
         """Ошибка кодировки одной ленты не должна останавливать обход."""
+
         scraper = RssScraper(delay_seconds=0)
         valid_document = MagicMock()
         with (
@@ -380,6 +416,7 @@ class UfnScraperTests(unittest.TestCase):
 
     def test_issues_are_sorted_numerically(self) -> None:
         """Номер 10 должен сортироваться после номера 9 по числовому значению."""
+
         archive_html = """
         <a href="/ru/articles/2026/9/">9</a>
         <a href="/ru/articles/2026/10/">10</a>
@@ -400,6 +437,7 @@ class UfnScraperTests(unittest.TestCase):
 
     def test_navigation_cleanup_preserves_formula(self) -> None:
         """Очистка навигации не должна удалять LaTeX-формулы."""
+
         text = (
             "Выпуски\n2026\nОчень длинное название физической статьи\n"
             "Энергия задаётся $E=mc^2$"
@@ -408,6 +446,7 @@ class UfnScraperTests(unittest.TestCase):
 
     def test_navigation_cleanup_preserves_short_title_and_early_formula(self) -> None:
         """Короткие заголовки и ранние формулы нельзя терять."""
+
         text = (
             "Выпуски\n2026\nМай\nКвантовый хаос\n$H=p^2/2m$\n"
             "Это длинная строка аннотации физической статьи."
@@ -418,6 +457,7 @@ class UfnScraperTests(unittest.TestCase):
 
     def test_extracts_initials_before_surname(self) -> None:
         """Типичная для УФН запись автора должна извлекаться."""
+
         self.assertEqual(
             UfnScraper._extract_authors("<b>Б.Б. Страумал</b>"),
             ["Б.Б. Страумал"],
@@ -425,16 +465,19 @@ class UfnScraperTests(unittest.TestCase):
 
     def test_bold_title_is_not_treated_as_author(self) -> None:
         """Полужирное название без инициалов не является автором."""
+
         self.assertEqual(UfnScraper._extract_authors("<b>Quantum Physics</b>"), [])
         self.assertEqual(UfnScraper._extract_authors("<b>Иван Иванов</b>"), [])
 
     def test_rejects_unknown_text_mode(self) -> None:
         """Опечатка в режиме должна быть заметна сразу."""
+
         with self.assertRaises(ValueError):
             UfnScraper(text_mode="pdff")
 
     def test_issue_error_does_not_stop_archive_iteration(self) -> None:
         """Ошибка одного выпуска не должна прерывать обход архива."""
+
         scraper = UfnScraper(delay_seconds=0)
         document = MagicMock()
         document.text = "Физический текст " * 10
@@ -457,6 +500,7 @@ class ScrapeCommandTests(unittest.TestCase):
 
     def test_pilot_preserves_requested_output_and_supplies_options(self) -> None:
         """Пилот не должен подменять файл или падать из-за аргументов."""
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "custom.jsonl"
             args = Namespace(

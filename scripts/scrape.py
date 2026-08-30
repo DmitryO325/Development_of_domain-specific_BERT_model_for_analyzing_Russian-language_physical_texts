@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Сбор пилотного корпуса с сайтов физических журналов.
+"""
+Сбор пилотного корпуса с сайтов физических журналов.
 
 Примеры:
   python scripts/scrape.py ufn --max-docs 10 --text-source pdf
@@ -8,152 +9,191 @@
   python scripts/scrape.py pilot
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
+
 from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import urlsplit
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Импорты проекта должны работать и при прямом запуске файла из scripts/.
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.collect.base import Document, append_jsonl  # noqa: E402
 from src.collect.rss_feed import RssScraper  # noqa: E402
 from src.collect.ufn import UfnScraper  # noqa: E402
 
-DEFAULT_OUT = ROOT / "data" / "raw" / "corpus.jsonl"
-DEFAULT_PILOT_OUT = ROOT / "data" / "raw" / "pilot.jsonl"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "raw" / "corpus.jsonl"
+DEFAULT_PILOT_OUTPUT_PATH = PROJECT_ROOT / "data" / "raw" / "pilot.jsonl"
 
 
-def _save_docs(docs: Iterable[Document], out: Path) -> int:
+def _save_documents(documents: Iterable[Document], output_path: Path) -> int:
     """Сохранить содержательные документы и вернуть их число."""
-    saved = 0
 
-    for doc in docs:
-        if doc.extra.get("skipped") or len(doc.text.strip()) < 30:
+    saved_count = 0
+
+    for document in documents:
+        if document.extra.get("skipped") or len(document.text.strip()) < 30:
             continue
 
-        append_jsonl(doc, out)
-        saved += 1
+        append_jsonl(document, output_path)
+        saved_count += 1
 
-    return saved
+    return saved_count
 
 
-def cmd_ufn(args: argparse.Namespace) -> None:
+def cmd_ufn(arguments: argparse.Namespace) -> None:
     """Выполнить сбор статей и RSS-карточек УФН."""
+
     scraper = UfnScraper(
-        delay_seconds=args.delay,
-        text_mode=args.text_source,
-        pdf_dir=Path(args.pdf_dir),
-        pdf_text_dir=Path(args.pdf_text_dir),
-        min_pdf_chars=args.min_pdf_chars,
-        try_ocr=not args.no_ocr,
+        delay_seconds=arguments.delay,
+        text_mode=arguments.text_source,
+        pdf_dir=Path(arguments.pdf_dir),
+        pdf_text_dir=Path(arguments.pdf_text_dir),
+        min_pdf_chars=arguments.min_pdf_chars,
+        try_ocr=not arguments.no_ocr,
     )
-    out = Path(args.output)
 
-    if args.fresh and out.exists():
-        out.unlink()
+    output_path = Path(arguments.output)
 
-    saved = 0
+    if arguments.fresh and output_path.exists():
+        output_path.unlink()
 
-    if args.rss:
-        docs = scraper.parse_rss(limit=args.rss_limit)
-        saved += _save_docs(docs, out)
-        print(f"RSS: сохранено {saved} записей → {out}")
+    saved_count = 0
 
-    max_issues = args.max_issues
-    if args.max_docs is not None and max_issues is None:
+    if arguments.rss:
+        documents = scraper.parse_rss(limit=arguments.rss_limit)
+        saved_count += _save_documents(documents, output_path)
+        print(f"RSS: сохранено {saved_count} записей → {output_path}")
+
+    max_issues = arguments.max_issues
+
+    if arguments.max_docs is not None and max_issues is None:
         print(
-            f"Цель: {args.max_docs} статей — обход выпусков без лимита по числу номеров"
+            f"Цель: {arguments.max_docs} статей — обход выпусков "
+            "без лимита по числу номеров"
         )
+
     elif max_issues:
         print(f"Лимит: не более {max_issues} последних выпусков")
 
-    for doc in scraper.iter_articles(
+    for document in scraper.iter_articles(
         max_issues=max_issues,
-        max_articles_per_issue=args.max_articles,
-        max_docs=args.max_docs,
+        max_articles_per_issue=arguments.max_articles,
+        max_docs=arguments.max_docs,
     ):
-        append_jsonl(doc, out)
-        saved += 1
-        src = doc.extra.get("text_source", "?")
-        print(f"  [{saved}] {doc.title[:60]}… [{src}, {len(doc.text)} симв.]")
+        append_jsonl(document, output_path)
+        saved_count += 1
+        text_source = document.extra.get("text_source", "?")
 
-    print(f"Итого UFN: {saved} документов → {out}")
+        print(
+            f"  [{saved_count}] {document.title[:60]}… "
+            f"[{text_source}, {len(document.text)} симв.]"
+        )
+
+    print(f"Итого UFN: {saved_count} документов → {output_path}")
 
 
-def cmd_rss(args: argparse.Namespace) -> None:
+def cmd_rss(arguments: argparse.Namespace) -> None:
     """Выполнить сбор из одной или всех штатных RSS-лент."""
-    scraper = RssScraper(delay_seconds=args.delay)
-    out = Path(args.output)
 
-    if args.fresh and out.exists():
-        out.unlink()
+    scraper = RssScraper(delay_seconds=arguments.delay)
+    output_path = Path(arguments.output)
 
-    if args.feed:
-        docs = scraper.parse_feed(args.feed, limit=args.limit)
-        saved = _save_docs(docs, out)
-        name = urlsplit(args.feed).hostname or args.feed
-        print(f"  {name}: {len(docs)} элементов ленты")
+    if arguments.fresh and output_path.exists():
+        output_path.unlink()
+
+    if arguments.feed:
+        documents = scraper.parse_feed(arguments.feed, limit=arguments.limit)
+        saved_count = _save_documents(documents, output_path)
+        source_name = urlsplit(arguments.feed).hostname or arguments.feed
+        print(f"  {source_name}: {len(documents)} элементов ленты")
+
     else:
-        docs = list(scraper.iter_default_feeds(limit_per_feed=args.limit))
-        for doc in docs:
-            if doc.extra.get("skipped"):
-                print(f"  {doc.source}: {doc.extra.get('error', 'неизвестная ошибка')}")
-        saved = _save_docs(docs, out)
+        documents = list(
+            scraper.iter_default_feeds(limit_per_feed=arguments.limit)
+        )
 
-    print(f"Итого RSS: {saved} документов → {out}")
+        for document in documents:
+            if document.extra.get("skipped"):
+                error_message = document.extra.get("error", "неизвестная ошибка")
+                print(f"  {document.source}: {error_message}")
+
+        saved_count = _save_documents(documents, output_path)
+
+    print(f"Итого RSS: {saved_count} документов → {output_path}")
 
 
-def cmd_pilot(args: argparse.Namespace) -> None:
+def cmd_pilot(arguments: argparse.Namespace) -> None:
     """Небольшой прогон для проверки: 1 выпуск УФН + RSS."""
-    args.max_issues = 1
-    args.max_articles = 4
-    args.max_docs = 4
-    args.rss = False
-    args.rss_limit = 0
-    args.text_source = "pdf+html"
-    args.pdf_dir = str(ROOT / "data" / "raw" / "pdf")
-    args.pdf_text_dir = str(ROOT / "data" / "raw" / "pdf_text")
-    args.min_pdf_chars = 500
-    args.no_ocr = False
-    cmd_ufn(args)
 
-    args.feed = None
-    args.limit = 8
-    args.fresh = False
-    cmd_rss(args)
+    arguments.max_issues = 1
+    arguments.max_articles = 4
+    arguments.max_docs = 4
+    arguments.rss = False
+    arguments.rss_limit = 0
+    arguments.text_source = "pdf+html"
+    arguments.pdf_dir = str(PROJECT_ROOT / "data" / "raw" / "pdf")
+    arguments.pdf_text_dir = str(PROJECT_ROOT / "data" / "raw" / "pdf_text")
+    arguments.min_pdf_chars = 500
+    arguments.no_ocr = False
+    cmd_ufn(arguments)
+
+    arguments.feed = None
+    arguments.limit = 8
+    arguments.fresh = False
+    cmd_rss(arguments)
 
     # Статистика
-    output = Path(args.output)
-    content = output.read_text(encoding="utf-8").strip() if output.exists() else ""
+    output_path = Path(arguments.output)
+
+    content = (
+        output_path.read_text(encoding="utf-8").strip()
+        if output_path.exists()
+        else ""
+    )
+
     line_count = len(content.splitlines()) if content else 0
-    print(f"\nПилот готов: {line_count} записей в {output}")
+    print(f"\nПилот готов: {line_count} записей в {output_path}")
 
 
 def main() -> None:
     """Разобрать аргументы командной строки и запустить выбранный сбор."""
+
     parser = argparse.ArgumentParser(description="Сбор текстов с сайтов НИР")
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument(
+    common_parser = argparse.ArgumentParser(add_help=False)
+
+    common_parser.add_argument(
         "--output",
         "-o",
-        default=str(DEFAULT_OUT),
-        help=("JSONL-файл (data/raw/corpus.jsonl; для pilot — data/raw/pilot.jsonl)"),
+        default=str(DEFAULT_OUTPUT_PATH),
+        help=(
+            "JSONL-файл (data/raw/corpus.jsonl; "
+            "для pilot — data/raw/pilot.jsonl)"
+        ),
     )
-    common.add_argument(
+
+    common_parser.add_argument(
         "--delay", type=float, default=1.0, help="Пауза между запросами (с)"
     )
-    common.add_argument(
-        "--fresh", action="store_true", help="Удалить output перед записью"
+
+    common_parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Удалить выходной файл перед записью",
     )
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    p_ufn = sub.add_parser(
-        "ufn", parents=[common], help="ufn.ru — выпуски и HTML-статьи"
+    ufn_parser = subparsers.add_parser(
+        "ufn", parents=[common_parser], help="ufn.ru — выпуски и HTML-статьи"
     )
-    p_ufn.add_argument(
+
+    ufn_parser.add_argument(
         "--max-issues",
         type=int,
         default=None,
@@ -162,21 +202,28 @@ def main() -> None:
             "с --max-docs идём по архиву до N статей)"
         ),
     )
-    p_ufn.add_argument(
+
+    ufn_parser.add_argument(
         "--max-articles",
         type=int,
         default=None,
         help="Статей на выпуск (по умолчанию все)",
     )
-    p_ufn.add_argument(
+
+    ufn_parser.add_argument(
         "--max-docs",
         type=int,
         default=None,
         help="Остановиться после N статей (например 100)",
     )
-    p_ufn.add_argument("--rss", action="store_true", help="Дополнительно RSS ufn.ru")
-    p_ufn.add_argument("--rss-limit", type=int, default=20)
-    p_ufn.add_argument(
+
+    ufn_parser.add_argument(
+        "--rss", action="store_true", help="Дополнительно RSS ufn.ru"
+    )
+
+    ufn_parser.add_argument("--rss-limit", type=int, default=20)
+
+    ufn_parser.add_argument(
         "--text-source",
         choices=["pdf", "html", "pdf+html"],
         default="pdf+html",
@@ -185,43 +232,55 @@ def main() -> None:
             "ufn.ru PDF часто без Unicode"
         ),
     )
-    p_ufn.add_argument(
+
+    ufn_parser.add_argument(
         "--pdf-dir",
-        default=str(ROOT / "data" / "raw" / "pdf"),
+        default=str(PROJECT_ROOT / "data" / "raw" / "pdf"),
         help="Куда сохранять PDF",
     )
-    p_ufn.add_argument(
+
+    ufn_parser.add_argument(
         "--min-pdf-chars",
         type=int,
         default=500,
         help="Мин. длина текста из PDF",
     )
-    p_ufn.add_argument(
+
+    ufn_parser.add_argument(
         "--pdf-text-dir",
-        default=str(ROOT / "data" / "raw" / "pdf_text"),
+        default=str(PROJECT_ROOT / "data" / "raw" / "pdf_text"),
         help="Куда писать .txt из PDF (видно, что распарсилось)",
     )
-    p_ufn.add_argument(
+
+    ufn_parser.add_argument(
         "--no-ocr",
         action="store_true",
         help="Без Tesseract (на ufn.ru PDF без OCR обычно нечитаемы)",
     )
-    p_ufn.set_defaults(func=cmd_ufn)
 
-    p_rss = sub.add_parser("rss", parents=[common], help="RSS-ленты журналов")
-    p_rss.add_argument("--feed", help="URL одной ленты")
-    p_rss.add_argument("--limit", type=int, default=20)
-    p_rss.set_defaults(func=cmd_rss)
+    ufn_parser.set_defaults(func=cmd_ufn)
 
-    p_pilot = sub.add_parser(
+    rss_parser = subparsers.add_parser(
+        "rss", parents=[common_parser], help="RSS-ленты журналов"
+    )
+
+    rss_parser.add_argument("--feed", help="URL одной ленты")
+    rss_parser.add_argument("--limit", type=int, default=20)
+    rss_parser.set_defaults(func=cmd_rss)
+
+    pilot_parser = subparsers.add_parser(
         "pilot",
-        parents=[common],
+        parents=[common_parser],
         help="Пилотный прогон (1 выпуск + RSS)",
     )
-    p_pilot.set_defaults(func=cmd_pilot, output=str(DEFAULT_PILOT_OUT))
+    
+    pilot_parser.set_defaults(
+        func=cmd_pilot,
+        output=str(DEFAULT_PILOT_OUTPUT_PATH),
+    )
 
-    args = parser.parse_args()
-    args.func(args)
+    arguments = parser.parse_args()
+    arguments.func(arguments)
 
 
 if __name__ == "__main__":

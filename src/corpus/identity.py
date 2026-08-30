@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 import uuid
+
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
@@ -30,15 +31,23 @@ def canonicalize_url(value: str) -> str:
     parts = urlsplit(raw)
     scheme = parts.scheme.lower()
     hostname = (parts.hostname or "").lower()
+
     port = parts.port
-    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+
+    default_http_port = scheme == "http" and port == 80
+    default_https_port = scheme == "https" and port == 443
+
+    if port and not (default_http_port or default_https_port):
         netloc = f"{hostname}:{port}"
+
     else:
         netloc = hostname
 
     path = re.sub(r"/{2,}", "/", parts.path or "/")
+
     if path != "/":
         path = path.rstrip("/")
+
     query = urlencode(
         sorted(
             (key, item)
@@ -48,6 +57,7 @@ def canonicalize_url(value: str) -> str:
         ),
         doseq=True,
     )
+
     return urlunsplit((scheme, netloc, path, query, ""))
 
 
@@ -55,21 +65,27 @@ def normalize_doi(value: str | None) -> str | None:
     """Нормализовать DOI без doi.org, регистра, query и fragment."""
 
     if not value:
-        return None
+        return
+
     raw = unquote(value.strip())
     raw = re.sub(r"^doi\s*:\s*", "", raw, flags=re.IGNORECASE)
 
     if re.match(r"^https?://", raw, flags=re.IGNORECASE):
         parts = urlsplit(raw)
+
         if (parts.hostname or "").lower() not in {"doi.org", "dx.doi.org"}:
-            return None
+            return
+
         raw = parts.path.lstrip("/")
+
     else:
         raw = raw.split("#", 1)[0].split("?", 1)[0]
 
     raw = raw.strip().rstrip(".,;").casefold()
+
     if not re.fullmatch(r"10\.\d{4,9}/\S+", raw):
-        return None
+        return
+
     return raw
 
 
@@ -77,11 +93,13 @@ def normalize_native_id(value: str | None) -> str | None:
     """Привести собственный ID источника к безопасному устойчивому виду."""
 
     if not value:
-        return None
+        return
+
     normalized = unicodedata.normalize("NFKC", str(value)).strip().casefold()
     normalized = re.sub(r"\s+", "-", normalized)
     normalized = re.sub(r"[^a-zа-яё0-9._:/-]+", "-", normalized)
     normalized = re.sub(r"-{2,}", "-", normalized).strip("-:/")
+
     return normalized or None
 
 
@@ -90,6 +108,7 @@ def normalize_identity_text(value: str | None) -> str:
 
     normalized = unicodedata.normalize("NFKC", value or "").casefold()
     normalized = re.sub(r"[^a-zа-яё0-9]+", " ", normalized)
+
     return " ".join(normalized.split())
 
 
@@ -105,6 +124,7 @@ def resolve_work_identity(
     """Выбрать work_id по правилу DOI → ID источника → UUIDv5."""
 
     normalized_doi = normalize_doi(doi)
+
     if normalized_doi:
         return WorkIdentity(
             work_id=f"doi:{normalized_doi}",
@@ -113,6 +133,7 @@ def resolve_work_identity(
         )
 
     normalized_native_id = normalize_native_id(native_id)
+
     if normalized_native_id:
         return WorkIdentity(
             work_id=f"source:{source_id}:{normalized_native_id}",
@@ -128,7 +149,9 @@ def resolve_work_identity(
             str(year or "").strip(),
         )
     )
+
     fallback = uuid.uuid5(WORK_ID_NAMESPACE, identity_key)
+
     return WorkIdentity(
         work_id=f"uuid:{fallback}",
         confidence="low",

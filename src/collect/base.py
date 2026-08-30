@@ -7,11 +7,14 @@ import http.client
 import json
 import re
 import time
+
 import urllib.error
 import urllib.request
+
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
 from urllib.parse import urlsplit
 
 USER_AGENT = "NIR-corpus-bot/0.1 (+academic research; contact via GitHub DmitryO325)"
@@ -20,7 +23,8 @@ RETRYABLE_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 @dataclass
 class Document:
-    """Сырой документ, полученный из сайта, RSS или PDF.
+    """
+    Сырой документ, полученный из сайта, RSS или PDF.
 
     Структура не проверяет типы во время исполнения. Строгая проверка
     выполняется при переносе записи в машинные реестры корпуса.
@@ -39,6 +43,7 @@ class Document:
 
     def to_dict(self) -> dict[str, Any]:
         """Преобразовать документ в словарь, пригодный для JSON."""
+
         return asdict(self)
 
 
@@ -49,17 +54,22 @@ def fetch_bytes(
     retries: int = 3,
     delay_seconds: float = 1.0,
 ) -> bytes:
-    """Скачать HTTP(S)-ресурс как байты с повторами временных ошибок.
+    """
+    Скачать HTTP(S)-ресурс как байты с повторами временных ошибок.
 
     Ошибки HTTP, которые не являются временными (например, 404), не
     повторяются.
     """
+
     if urlsplit(url).scheme.lower() not in {"http", "https"}:
         raise ValueError("Поддерживаются только HTTP(S)-адреса")
+
     if timeout <= 0:
         raise ValueError("timeout должен быть больше нуля")
+
     if retries < 1:
         raise ValueError("retries должен быть не меньше 1")
+
     if delay_seconds < 0:
         raise ValueError("delay_seconds не может быть отрицательным")
 
@@ -73,19 +83,24 @@ def fetch_bytes(
             )
 
             # URL-схема проверена перед циклом; локальные схемы запрещены.
+
             with urllib.request.urlopen(  # noqa: S310
                 request,
                 timeout=timeout,
             ) as response:
                 return response.read()
+
         except urllib.error.HTTPError as exception:
             status_code = exception.code
             exception.close()
+
             if status_code not in RETRYABLE_HTTP_STATUS_CODES:
                 raise RuntimeError(
                     f"Не удалось загрузить {url}: HTTP {status_code}"
                 ) from exception
+
             last_error = exception
+
         except (
             urllib.error.URLError,
             TimeoutError,
@@ -99,6 +114,7 @@ def fetch_bytes(
 
     if last_error is None:  # Защита от непредвиденного изменения цикла повторов.
         raise RuntimeError(f"Не удалось загрузить {url}")
+
     raise RuntimeError(f"Не удалось загрузить {url}: {last_error}") from last_error
 
 
@@ -110,11 +126,13 @@ def fetch_html(
     retries: int = 3,
     delay_seconds: float = 1.0,
 ) -> str:
-    """Скачать страницу и декодировать её в строку.
+    """
+    Скачать страницу и декодировать её в строку.
 
     По умолчанию используется UTF-8. Для старых HTML-страниц УФН нужно
     явно передавать ``encoding="windows-1251"``.
     """
+
     raw = fetch_bytes(
         url,
         timeout=timeout,
@@ -162,10 +180,11 @@ def html_to_text(fragment: str) -> str:
 
 
 def append_jsonl(doc: Document, path: Path) -> None:
-    """Дописать документ одной UTF-8-строкой в JSONL-файл.
-
+    """
+    Дописать документ одной UTF-8-строкой в JSONL-файл.
     Функция не выполняет дедупликацию и не синхронизирует параллельные записи.
     """
+
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with path.open("a", encoding="utf-8") as file:
@@ -174,4 +193,5 @@ def append_jsonl(doc: Document, path: Path) -> None:
 
 def normalize_whitespace(text: str) -> str:
     """Убрать краевые пробелы и сократить избыточные пустые строки."""
+
     return re.sub(r"\n{3,}", "\n\n", text.strip())

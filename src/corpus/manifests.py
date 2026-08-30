@@ -6,11 +6,13 @@ import hashlib
 import json
 import os
 import tempfile
+
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any
 
 from .schema_validation import SchemaCatalog, SchemaValidationError
 
@@ -42,7 +44,7 @@ class ManifestConflictError(ManifestError):
 
 
 class _DuplicateJsonKeyError(ValueError):
-    pass
+    """JSON-объект содержит один ключ более одного раза."""
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,8 @@ class PlannedBlob:
 
 @dataclass
 class ManifestPlan:
+    """Пакет реестровых записей и файлов для совместной проверки."""
+
     rights: list[dict[str, Any]] = field(default_factory=list)
     works: list[dict[str, Any]] = field(default_factory=list)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
@@ -65,6 +69,8 @@ class ManifestPlan:
 
 @dataclass(frozen=True)
 class CommitResult:
+    """Сводные счётчики предварительной проверки или записи плана."""
+
     inserted: dict[str, int]
     unchanged: dict[str, int]
     written_blobs: int
@@ -74,22 +80,30 @@ class CommitResult:
 
 @dataclass(frozen=True)
 class AuditReport:
+    """Результат полного аудита рабочих реестров и файлов корпуса."""
+
     counts: dict[str, int]
     errors: tuple[str, ...]
     warnings: tuple[str, ...]
 
     @property
     def ok(self) -> bool:
+        """Показать, завершился ли аудит без ошибок."""
+
         return not self.errors
 
 
 @dataclass(frozen=True)
 class _BlobSpec:
+    """Ожидаемые хеш и размер одного файлового объекта."""
+
     sha256: str
     size: int
 
 
 def canonical_json(record: Any) -> str:
+    """Сериализовать значение в детерминированное компактное представление JSON."""
+
     return json.dumps(
         record,
         ensure_ascii=False,
@@ -99,27 +113,42 @@ def canonical_json(record: Any) -> str:
 
 
 def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Собрать JSON-объект и отклонить повторяющиеся ключи."""
+
     result: dict[str, Any] = {}
+
     for key, value in pairs:
         if key in result:
             raise _DuplicateJsonKeyError(f"повторный ключ {key!r}")
+
         result[key] = value
+
     return result
 
 
 def sha256_bytes(data: bytes) -> str:
+    """Вычислить шестнадцатеричный SHA-256 для переданных байтов."""
     return hashlib.sha256(data).hexdigest()
 
 
 def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    """Вычислить SHA-256 файла, читая его блоками заданного размера."""
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size должен быть больше нуля")
+
     digest = hashlib.sha256()
+
     with path.open("rb") as stream:
         while chunk := stream.read(chunk_size):
             digest.update(chunk)
+
     return digest.hexdigest()
 
 
 def _right_is_expired(record: dict[str, Any]) -> bool:
+    """Проверить, истёк ли срок действия записи о правах."""
+
     expires = record.get("rights_expires_at")
     return bool(expires and date.fromisoformat(expires) < date.today())
 
@@ -134,18 +163,28 @@ class ManifestStore:
         manifest_dir: Path | None = None,
         schema_dir: Path | None = None,
     ) -> None:
+        """Настроить пути проекта, реестров и их JSON Schema."""
+
         self.project_root = Path(project_root).resolve()
-        self.manifest_dir = Path(manifest_dir or self.project_root / "manifests").resolve()
+        self.manifest_dir = Path(
+            manifest_dir or self.project_root / "manifests"
+        ).resolve()
+
         self.schema_dir = Path(
             schema_dir or self.project_root / "manifests" / "schemas"
         ).resolve()
+
         self.schemas = SchemaCatalog(self.schema_dir)
 
     def path_for(self, kind: str) -> Path:
+        """Вернуть путь к JSONL-файлу реестра выбранного вида."""
+
         try:
             filename = REGISTRY_FILES[kind]
-        except KeyError as exc:
-            raise KeyError(f"Неизвестный реестр: {kind}") from exc
+
+        except KeyError as exception:
+            raise KeyError(f"Неизвестный реестр: {kind}") from exception
+
         return self.manifest_dir / filename
 
     def records(self, kind: str) -> list[dict[str, Any]]:
@@ -162,11 +201,13 @@ class ManifestStore:
         """Проверить весь пакет без создания каталога, lock-файла и данных."""
 
         current = {kind: self._read_kind(kind) for kind in REGISTRY_FILES}
+
         new_records, unchanged, blob_state = self._analyze_plans(
             plans,
             current=current,
             allow_unresolved_rights=allow_unresolved_rights,
         )
+
         return CommitResult(
             inserted={kind: len(rows) for kind, rows in new_records.items()},
             unchanged=unchanged,
@@ -182,6 +223,7 @@ class ManifestStore:
             return self.preflight([plan])
 
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
+
         with self._exclusive_lock():
             current = {kind: self._read_kind(kind) for kind in REGISTRY_FILES}
             new_records, unchanged, _blob_state = self._analyze_plans(
@@ -189,8 +231,10 @@ class ManifestStore:
                 current=current,
                 allow_unresolved_rights=False,
             )
+
             written_blobs, unchanged_blobs = self._write_blobs(plan.blobs)
             # При сбое повтор того же плана завершит оставшиеся шаги без дублей.
+
             for kind in ("rights", "works", "artifacts"):
                 self._atomic_append(self.path_for(kind), new_records[kind])
 
@@ -213,68 +257,90 @@ class ManifestStore:
         dict[str, int],
         dict[str, int],
     ]:
+        """Проверить планы и разделить новые и неизменившиеся данные."""
+
         candidate: dict[str, dict[str, dict[str, Any]]] = {
             kind: {} for kind in REGISTRY_FILES
         }
+
         blob_specs: dict[str, _BlobSpec] = {}
 
         for plan in plans:
             normalized = self._normalize_plan(plan)
+
             for kind in ("rights", "works", "artifacts"):
                 for record_id, record in normalized[kind].items():
                     previous = candidate[kind].get(record_id)
+
                     if previous is not None and not self._records_equivalent(
                         kind, previous, record
                     ):
                         raise ManifestConflictError(
-                            f"{kind}: пакет содержит разные записи с ID {record_id!r}"
+                            f"{kind}: пакет содержит разные записи "
+                            f"с ID {record_id!r}"
                         )
+
                     candidate[kind].setdefault(record_id, record)
 
             for blob in plan.blobs:
                 actual_sha = sha256_bytes(blob.data)
+
                 if actual_sha != blob.sha256:
                     raise ManifestError(
-                        f"blob {blob.relative_path}: заявлен SHA-256 {blob.sha256}, "
+                        f"blob {blob.relative_path}: заявлен SHA-256 "
+                        f"{blob.sha256}, "
                         f"получен {actual_sha}"
                     )
+
                 self._resolve_data_path(blob.relative_path)
                 spec = _BlobSpec(blob.sha256, len(blob.data))
                 previous_spec = blob_specs.get(blob.relative_path)
+
                 if previous_spec is not None and previous_spec != spec:
                     raise ManifestConflictError(
                         f"Два разных blob претендуют на путь {blob.relative_path}"
                     )
+
                 blob_specs[blob.relative_path] = spec
 
         new_records: dict[str, list[dict[str, Any]]] = {
             kind: [] for kind in REGISTRY_FILES
         }
+
         unchanged = {kind: 0 for kind in REGISTRY_FILES}
+
         for kind in ("rights", "works", "artifacts"):
             for record_id, record in candidate[kind].items():
                 existing = current[kind].get(record_id)
+
                 if existing is None:
                     new_records[kind].append(record)
+
                 elif self._records_equivalent(kind, existing, record):
                     unchanged[kind] += 1
+
                 else:
                     raise ManifestConflictError(
-                        f"{kind}: ID {record_id!r} уже существует с другим содержимым"
+                        f"{kind}: ID {record_id!r} уже существует "
+                        "с другим содержимым"
                     )
 
         combined = {
             kind: {**current[kind], **candidate[kind]} for kind in REGISTRY_FILES
         }
+
         self._validate_relations(
             combined,
             allow_unresolved_rights=allow_unresolved_rights,
         )
+
         self._validate_parent_cycles(combined["artifacts"])
+
         blob_state = self._validate_artifact_payloads(
             combined["artifacts"],
             blob_specs,
         )
+
         return new_records, unchanged, blob_state
 
     def audit(self) -> AuditReport:
@@ -283,71 +349,87 @@ class ManifestStore:
         errors: list[str] = []
         warnings: list[str] = []
         current: dict[str, dict[str, dict[str, Any]]] = {}
+
         for kind in REGISTRY_FILES:
             try:
                 current[kind] = self._read_kind(kind)
-            except (ManifestError, SchemaValidationError) as exc:
-                errors.append(str(exc))
+
+            except (ManifestError, SchemaValidationError) as exception:
+                errors.append(str(exception))
                 current[kind] = {}
 
         try:
             self._validate_relations(current)
-        except ManifestError as exc:
-            errors.extend(str(exc).splitlines())
+
+        except ManifestError as exception:
+            errors.extend(str(exception).splitlines())
 
         try:
             self._validate_artifact_payloads(current["artifacts"], {})
-        except ManifestError as exc:
-            errors.extend(str(exc).splitlines())
+
+        except ManifestError as exception:
+            errors.extend(str(exception).splitlines())
 
         artifact_ids: set[str] = set()
+
         for record in current["artifacts"].values():
             artifact_id = record.get("artifact_id")
+
             if artifact_id:
                 if artifact_id in artifact_ids:
-                    errors.append(f"artifacts: artifact_id {artifact_id!r} не уникален")
+                    errors.append(
+                        f"artifacts: artifact_id {artifact_id!r} не уникален"
+                    )
+
                 artifact_ids.add(artifact_id)
 
             try:
                 self._validate_timestamp_order("artifacts", record)
-            except ManifestError as exc:
-                errors.append(str(exc))
+
+            except ManifestError as exception:
+                errors.append(str(exception))
 
             if record.get("acquisition_status") == "retrieved" and not record.get(
                 "rights_record_ids"
             ):
                 warnings.append(
-                    f"artifacts: {record['artifact_record_id']} получен, но права ещё не привязаны"
+                    f"artifacts: {record['artifact_record_id']} получен, "
+                    "но права ещё не привязаны"
                 )
+
             if record.get("acquisition_status") == "retrieved" and not record.get(
                 "retrievals"
             ):
                 warnings.append(
-                    f"artifacts: {record['artifact_record_id']} не имеет точного события "
+                    f"artifacts: {record['artifact_record_id']} не имеет "
+                    "точного события "
                     "получения; происхождение неполно"
                 )
 
         for record in current["works"].values():
             try:
                 self._validate_timestamp_order("works", record)
-            except ManifestError as exc:
-                errors.append(str(exc))
+
+            except ManifestError as exception:
+                errors.append(str(exception))
 
         for record in current["rights"].values():
             try:
                 self._validate_timestamp_order("rights", record, updated_required=False)
-            except ManifestError as exc:
-                errors.append(str(exc))
+
+            except ManifestError as exception:
+                errors.append(str(exception))
 
         try:
             self._validate_parent_cycles(current["artifacts"])
-        except ManifestError as exc:
-            errors.append(str(exc))
+
+        except ManifestError as exception:
+            errors.append(str(exception))
 
         if not any(current.values()):
             errors.append(
-                "Рабочие реестры works.jsonl, artifacts.jsonl и rights.jsonl отсутствуют "
-                "или пусты"
+                "Рабочие реестры works.jsonl, artifacts.jsonl и "
+                "rights.jsonl отсутствуют или пусты"
             )
 
         return AuditReport(
@@ -359,27 +441,38 @@ class ManifestStore:
     def _normalize_plan(
         self, plan: ManifestPlan
     ) -> dict[str, dict[str, dict[str, Any]]]:
+        """Проверить записи плана и построить индексы по первичным ключам."""
+
         result: dict[str, dict[str, dict[str, Any]]] = {}
+
         for kind in ("rights", "works", "artifacts"):
             primary = PRIMARY_FIELDS[kind]
             index: dict[str, dict[str, Any]] = {}
+
             for record in getattr(plan, kind):
                 self.schemas.validate(kind, record)
+
                 self._validate_timestamp_order(
                     kind,
                     record,
                     updated_required=kind != "rights",
                 )
+
                 record_id = record[primary]
                 previous = index.get(record_id)
+
                 if previous is not None and not self._records_equivalent(
                     kind, previous, record
                 ):
                     raise ManifestConflictError(
-                        f"{kind}: план содержит разные записи с ID {record_id!r}"
+                        f"{kind}: план содержит разные записи "
+                        f"с ID {record_id!r}"
                     )
+
                 index.setdefault(record_id, record)
+
             result[kind] = index
+
         return result
 
     @staticmethod
@@ -392,44 +485,79 @@ class ManifestStore:
 
         if kind == "rights":
             return left == right
+
         ignored = {"created_at", "updated_at"}
-        left_semantic = {key: value for key, value in left.items() if key not in ignored}
-        right_semantic = {key: value for key, value in right.items() if key not in ignored}
+        left_semantic = {
+            key: value for key, value in left.items() if key not in ignored
+        }
+
+        right_semantic = {
+            key: value for key, value in right.items() if key not in ignored
+        }
+
         return left_semantic == right_semantic
 
     def _read_kind(self, kind: str) -> dict[str, dict[str, Any]]:
+        """Прочитать и строго проверить один JSONL-реестр."""
+
         path = self.path_for(kind)
+
         if not path.exists():
             return {}
+
         raw = path.read_bytes()
+
         if raw and not raw.endswith(b"\n"):
             raise ManifestError(f"{path}: отсутствует конечный перевод строки")
+
         try:
             text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ManifestError(f"{path}: файл не является корректным UTF-8: {exc}") from exc
+
+        except UnicodeDecodeError as exception:
+            raise ManifestError(
+                f"{path}: файл не является корректным UTF-8: {exception}"
+            ) from exception
 
         primary = PRIMARY_FIELDS[kind]
         index: dict[str, dict[str, Any]] = {}
+
         for line_number, line in enumerate(text.splitlines(), start=1):
             if not line.strip():
                 continue
+
             try:
-                record = json.loads(line, object_pairs_hook=_object_without_duplicate_keys)
-            except (json.JSONDecodeError, _DuplicateJsonKeyError) as exc:
-                raise ManifestError(f"{path}:{line_number}: некорректный JSON: {exc}") from exc
+                record = json.loads(
+                    line,
+                    object_pairs_hook=_object_without_duplicate_keys,
+                )
+
+            except (json.JSONDecodeError, _DuplicateJsonKeyError) as exception:
+                raise ManifestError(
+                    f"{path}:{line_number}: некорректный JSON: {exception}"
+                ) from exception
+
             if not isinstance(record, dict):
-                raise ManifestError(f"{path}:{line_number}: строка должна быть объектом")
+                raise ManifestError(
+                    f"{path}:{line_number}: строка должна быть объектом"
+                )
+
             try:
                 self.schemas.validate(kind, record)
-            except SchemaValidationError as exc:
-                raise SchemaValidationError(f"{path}:{line_number}: {exc}") from exc
+
+            except SchemaValidationError as exception:
+                raise SchemaValidationError(
+                    f"{path}:{line_number}: {exception}"
+                ) from exception
+
             record_id = record[primary]
+
             if record_id in index:
                 raise ManifestConflictError(
                     f"{path}:{line_number}: повторный {primary}={record_id!r}"
                 )
+
             index[record_id] = record
+
         return index
 
     def _validate_relations(
@@ -438,11 +566,14 @@ class ManifestStore:
         *,
         allow_unresolved_rights: bool = False,
     ) -> None:
+        """Проверить связи работ, артефактов и определяющих записей прав."""
+
         errors: list[str] = []
         works = records["works"]
         rights = records["rights"]
         artifacts = records["artifacts"]
         superseded_rights = self._validate_rights_supersedes(rights, errors)
+
         by_artifact_id = {
             record["artifact_id"]: record
             for record in artifacts.values()
@@ -460,20 +591,31 @@ class ManifestStore:
         for artifact in artifacts.values():
             record_id = artifact["artifact_record_id"]
             work = works.get(artifact["work_id"])
+
             if work is None:
                 errors.append(
                     f"artifacts: {record_id} ссылается на отсутствующий work_id "
                     f"{artifact['work_id']!r}"
                 )
+
                 continue
 
             parent_id = artifact.get("parent_artifact_id")
+
             if parent_id and parent_id not in by_artifact_id:
                 errors.append(
-                    f"artifacts: {record_id} ссылается на отсутствующего родителя {parent_id!r}"
+                    f"artifacts: {record_id} ссылается на отсутствующего "
+                    f"родителя {parent_id!r}"
                 )
-            elif parent_id and by_artifact_id[parent_id]["work_id"] != artifact["work_id"]:
-                errors.append(f"artifacts: {record_id} и его родитель относятся к разным работам")
+
+            elif (
+                parent_id
+                and by_artifact_id[parent_id]["work_id"] != artifact["work_id"]
+            ):
+                errors.append(
+                    f"artifacts: {record_id} и его родитель относятся "
+                    "к разным работам"
+                )
 
             if (
                 artifact.get("extraction_version") == "legacy-import-v1"
@@ -482,10 +624,11 @@ class ManifestStore:
             ):
                 parent = by_artifact_id.get(parent_id) if parent_id else None
                 permitted_methods = {"legacy_pdf", "legacy_pdf_ocr_layout"}
+
                 if (
-                    parent is None
-                    or parent.get("representation") != "pdf"
-                    or artifact.get("extraction_method") not in permitted_methods
+                    parent is None or
+                    parent.get("representation") != "pdf" or
+                    artifact.get("extraction_method") not in permitted_methods
                 ):
                     errors.append(
                         f"artifacts: {record_id}: legacy full_text не имеет "
@@ -493,17 +636,22 @@ class ManifestStore:
                     )
 
             referenced_rights: list[dict[str, Any]] = []
+
             for rights_id in artifact.get("rights_record_ids", []):
                 rights_record = rights.get(rights_id)
+
                 if rights_record is None:
                     errors.append(
-                        f"artifacts: {record_id} ссылается на отсутствующий rights_record_id "
+                        f"artifacts: {record_id} ссылается на отсутствующий "
+                        "rights_record_id "
                         f"{rights_id!r}"
                     )
+
                 elif not self._rights_apply(rights_record, work, artifact):
                     errors.append(
                         f"artifacts: право {rights_id!r} не применимо к {record_id}"
                     )
+
                 elif (
                     rights_record["operation"] == "acquisition"
                     and not self._right_matches_operation_context(
@@ -517,28 +665,36 @@ class ManifestStore:
                         f"режиму {artifact['acquisition_method']}|"
                         f"{artifact['acquisition_scope']} артефакта {record_id}"
                     )
+
                 else:
                     referenced_rights.append(rights_record)
 
             for retrieval in artifact.get("retrievals", []):
                 retrieval_id = retrieval["retrieval_id"]
+
                 if retrieval_id in retrieval_ids:
-                    errors.append(f"artifacts: повторный retrieval_id {retrieval_id!r}")
+                    errors.append(
+                        f"artifacts: повторный retrieval_id {retrieval_id!r}"
+                    )
+
                 retrieval_ids.add(retrieval_id)
 
             if not referenced_rights and allow_unresolved_rights:
                 continue
+
             active_rights = [
                 item
                 for item in referenced_rights
                 if item["rights_record_id"] not in superseded_rights
             ]
+
             all_active_applicable_rights = [
                 item
                 for item in rights.values()
                 if item["rights_record_id"] not in superseded_rights
                 and self._rights_apply(item, work, artifact)
             ]
+
             if artifact["acquisition_status"] in {"ready", "retrieved"}:
                 self._require_permitting_right(
                     active_rights,
@@ -548,19 +704,24 @@ class ManifestStore:
                     artifact_record_id=record_id,
                     errors=errors,
                 )
+
             elif artifact["acquisition_status"] == "rights_blocked":
                 decisions = self._operation_decisions(
                     all_active_applicable_rights,
                     operation="acquisition",
                     artifact=artifact,
                 )
+
                 referenced_ids = {
                     item["rights_record_id"] for item in active_rights
                 }
+
                 if not decisions:
                     errors.append(
-                        f"artifacts: {record_id} имеет rights_blocked без записи acquisition"
+                        f"artifacts: {record_id} имеет rights_blocked "
+                        "без записи acquisition"
                     )
+
                 elif not any(
                     item["rights_record_id"] in referenced_ids for item in decisions
                 ):
@@ -568,9 +729,11 @@ class ManifestStore:
                         f"artifacts: {record_id} не ссылается на определяющую "
                         "запись acquisition"
                     )
+
                 elif all(self._right_permits(item) for item in decisions):
                     errors.append(
-                        f"artifacts: {record_id} имеет rights_blocked, но право acquisition "
+                        f"artifacts: {record_id} имеет rights_blocked, "
+                        "но право acquisition "
                         "разрешает операцию"
                     )
 
@@ -599,31 +762,47 @@ class ManifestStore:
         artifact_record_id: str,
         errors: list[str],
     ) -> None:
+        """Добавить ошибку, если определяющее право не разрешает операцию."""
+
         decisions = self._operation_decisions(
             all_applicable_rights,
             operation=operation,
             artifact=artifact,
         )
+
         if not decisions:
             errors.append(
-                f"artifacts: {artifact_record_id} не имеет применимой записи {operation}"
+                f"artifacts: {artifact_record_id} не имеет "
+                f"применимой записи {operation}"
             )
+
             return
+
         referenced_ids = {item["rights_record_id"] for item in rights}
+
         if not any(item["rights_record_id"] in referenced_ids for item in decisions):
             errors.append(
                 f"artifacts: {artifact_record_id} не ссылается на наиболее "
                 f"конкретную запись {operation}"
             )
+
         if not all(self._right_permits(item) for item in decisions):
             details: set[str] = set()
+
             for item in decisions:
                 detail = item["status"]
+
                 if _right_is_expired(item):
                     detail += ":expired"
-                elif item["status"] == "conditional" and not self._conditions_satisfied(item):
+
+                elif (
+                    item["status"] == "conditional"
+                    and not self._conditions_satisfied(item)
+                ):
                     detail += ":conditions_pending"
+
                 details.add(detail)
+
             errors.append(
                 f"artifacts: {artifact_record_id}: операция {operation} не разрешена "
                 f"определяющей записью прав (статусы: "
@@ -632,19 +811,25 @@ class ManifestStore:
 
     @staticmethod
     def _conditions_satisfied(right: dict[str, Any]) -> bool:
+        """Проверить наличие времени и доказательства выполнения условий."""
+
         # Минимальное материализованное поле v1. До реального заполнения
         # DEC-013 должен заменить его журналом выполнения каждого условия.
         return bool(
-            right.get("conditions_satisfied_at")
-            and right.get("conditions_evidence_sha256")
+            right.get("conditions_satisfied_at") and
+            right.get("conditions_evidence_sha256")
         )
 
     @classmethod
     def _right_permits(cls, right: dict[str, Any]) -> bool:
+        """Проверить, разрешает ли активная запись прав свою операцию."""
+
         if _right_is_expired(right):
             return False
+
         if right["status"] == "allowed":
             return True
+
         return right["status"] == "conditional" and cls._conditions_satisfied(right)
 
     @staticmethod
@@ -653,10 +838,14 @@ class ManifestStore:
         artifact: dict[str, Any],
         operation: str,
     ) -> bool:
+        """Сопоставить режим права с режимом получения артефакта."""
+
         method = right["acquisition_method"]
         scope = right["acquisition_scope"]
+
         if operation != "acquisition" and method is None and scope is None:
             return True
+
         return (
             method == artifact.get("acquisition_method")
             and scope == artifact.get("acquisition_scope")
@@ -670,20 +859,26 @@ class ManifestStore:
         operation: str,
         artifact: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        """Выбрать наиболее конкретные записи, определяющие операцию."""
+
         candidates = [
             item
             for item in rights
             if item["operation"] == operation
             and cls._right_matches_operation_context(item, artifact, operation)
         ]
+
         if not candidates:
             return []
 
         def specificity(item: dict[str, Any]) -> tuple[int, int]:
+            """Вычислить приоритет области и уточнения режима получения."""
+
             mode_specificity = int(item["acquisition_method"] is not None)
             return SCOPE_SPECIFICITY[item["scope_type"]], mode_specificity
 
         controlling_specificity = max(specificity(item) for item in candidates)
+
         return [
             item
             for item in candidates
@@ -695,19 +890,28 @@ class ManifestStore:
         rights: dict[str, dict[str, Any]],
         errors: list[str],
     ) -> set[str]:
+        """Проверить цепочки замены прав и вернуть ID заменённых записей."""
+
         superseded: set[str] = set()
         graph: dict[str, str] = {}
         successor_by_previous: dict[str, str] = {}
+
         for record_id, record in rights.items():
             previous = record.get("supersedes_rights_record_id")
+
             if not previous:
                 continue
+
             if previous not in rights:
                 errors.append(
-                    f"rights: {record_id} ссылается на отсутствующую запись {previous!r}"
+                    f"rights: {record_id} ссылается на отсутствующую "
+                    f"запись {previous!r}"
                 )
+
                 continue
+
             previous_record = rights[previous]
+
             comparable_fields = (
                 "scope_type",
                 "scope_id",
@@ -715,22 +919,34 @@ class ManifestStore:
                 "acquisition_method",
                 "acquisition_scope",
             )
-            if any(record[field] != previous_record[field] for field in comparable_fields):
+
+            if any(
+                record[field] != previous_record[field]
+                for field in comparable_fields
+            ):
                 errors.append(
                     f"rights: {record_id} заменяет {previous!r} с другой областью, "
                     "операцией или режимом получения"
                 )
+
                 continue
+
             if previous == record_id:
-                errors.append(f"rights: {record_id} не может заменять сам себя")
+                errors.append(
+                    f"rights: {record_id} не может заменять сам себя"
+                )
                 continue
+
             previous_successor = successor_by_previous.get(previous)
+
             if previous_successor is not None:
                 errors.append(
                     f"rights: {previous!r} имеет два преемника: "
                     f"{previous_successor!r} и {record_id!r}"
                 )
+
                 continue
+
             if date.fromisoformat(record["rights_checked_at"]) < date.fromisoformat(
                 previous_record["rights_checked_at"]
             ):
@@ -738,17 +954,25 @@ class ManifestStore:
                     f"rights: {record_id} не может заменить более позднюю "
                     f"проверку {previous!r}"
                 )
+
                 continue
-            created = datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
+
+            created = datetime.fromisoformat(
+                record["created_at"].replace("Z", "+00:00")
+            )
+
             previous_created = datetime.fromisoformat(
                 previous_record["created_at"].replace("Z", "+00:00")
             )
+
             if created <= previous_created:
                 errors.append(
                     f"rights: {record_id} должен быть создан позже "
                     f"заменяемой записи {previous!r}"
                 )
+
                 continue
+
             superseded.add(previous)
             graph[record_id] = previous
             successor_by_previous[previous] = record_id
@@ -756,12 +980,15 @@ class ManifestStore:
         for start in graph:
             seen: set[str] = set()
             current: str | None = start
+
             while current in graph:
                 if current in seen:
                     errors.append(f"rights: цикл supersedes около {current!r}")
                     break
+
                 seen.add(current)
                 current = graph[current]
+
         return superseded
 
     @staticmethod
@@ -769,53 +996,74 @@ class ManifestStore:
         works: dict[str, dict[str, Any]],
         errors: list[str],
     ) -> None:
+        """Проверить уникальность идентификаторов и связи дублей работ."""
+
         for field in ("doi", "edn", "canonical_url"):
             owners: dict[str, str] = {}
+
             for work_id, work in works.items():
                 value = work.get(field)
+
                 if not value:
                     continue
+
                 normalized = str(value).casefold()
                 previous = owners.get(normalized)
+
                 if previous and previous != work_id:
                     errors.append(
-                        f"works: {field}={value!r} принадлежит одновременно {previous!r} "
+                        f"works: {field}={value!r} принадлежит одновременно "
+                        f"{previous!r} "
                         f"и {work_id!r}"
                     )
+
                 owners[normalized] = work_id
 
         identity_owners = {work_id: work_id for work_id in works}
         duplicate_graph: dict[str, str] = {}
+
         for work_id, work in works.items():
             for alias in work.get("work_aliases", []):
                 owner = identity_owners.get(alias)
+
                 if owner and owner != work_id:
                     errors.append(
-                        f"works: псевдоним {alias!r} принадлежит одновременно {owner!r} "
+                        f"works: псевдоним {alias!r} принадлежит "
+                        f"одновременно {owner!r} "
                         f"и {work_id!r}"
                     )
+
                 identity_owners[alias] = work_id
 
             duplicate_of = work.get("duplicate_of_work_id")
+
             if not duplicate_of:
                 continue
+
             if duplicate_of == work_id:
-                errors.append(f"works: {work_id!r} не может быть дубликатом самого себя")
+                errors.append(
+                    f"works: {work_id!r} не может быть дубликатом самого себя"
+                )
+
             elif duplicate_of not in works:
                 errors.append(
-                    f"works: {work_id!r} ссылается на отсутствующий duplicate_of_work_id "
+                    f"works: {work_id!r} ссылается на отсутствующий "
+                    "duplicate_of_work_id "
                     f"{duplicate_of!r}"
                 )
+
             else:
                 duplicate_graph[work_id] = duplicate_of
 
         for start in duplicate_graph:
             seen: set[str] = set()
             current: str | None = start
+
             while current in duplicate_graph:
                 if current in seen:
                     errors.append(f"works: цикл duplicate_of_work_id около {current!r}")
                     break
+
                 seen.add(current)
                 current = duplicate_graph[current]
 
@@ -823,18 +1071,27 @@ class ManifestStore:
     def _rights_apply(
         rights: dict[str, Any], work: dict[str, Any], artifact: dict[str, Any]
     ) -> bool:
+        """Проверить применимость области права к работе и артефакту."""
+
         scope_type = rights["scope_type"]
         scope_id = rights["scope_id"]
+
         expected = {
             "source_group": work["source_group_id"],
             "source": work["source_id"],
             "journal": work["journal_id"],
             "work": work["work_id"],
         }
+
         if scope_type == "artifact":
-            return scope_id in {artifact["artifact_record_id"], artifact.get("artifact_id")}
+            return scope_id in {
+                artifact["artifact_record_id"],
+                artifact.get("artifact_id"),
+            }
+
         if scope_type == "work":
             return scope_id in {work["work_id"], *work.get("work_aliases", [])}
+
         return expected[scope_type] == scope_id
 
     def _validate_artifact_payloads(
@@ -842,141 +1099,209 @@ class ManifestStore:
         artifacts: dict[str, dict[str, Any]],
         blob_specs: dict[str, _BlobSpec],
     ) -> dict[str, int]:
+        """Проверить пути, хеши и размеры файловых данных артефактов."""
+
         artifact_paths: dict[str, dict[str, Any]] = {}
+
         for artifact in artifacts.values():
             record_id = artifact["artifact_record_id"]
             artifact_id = artifact.get("artifact_id")
             digest = artifact.get("sha256")
+
             if artifact_id is not None and artifact_id != f"sha256:{digest}":
                 raise ManifestError(
                     f"artifacts: {record_id}: artifact_id не соответствует полю sha256"
                 )
 
             path_value = artifact.get("path")
+
             if path_value is None:
                 continue
+
             previous = artifact_paths.get(path_value)
+
             if previous is not None and previous["artifact_record_id"] != record_id:
                 raise ManifestConflictError(
                     f"artifacts: путь {path_value!r} назначен нескольким записям"
                 )
-            artifact_paths[path_value] = artifact
 
+            artifact_paths[path_value] = artifact
             spec = blob_specs.get(path_value)
+
             if spec is not None:
-                if artifact.get("sha256") != spec.sha256 or artifact.get("bytes") != spec.size:
+                if (
+                    artifact.get("sha256") != spec.sha256
+                    or artifact.get("bytes") != spec.size
+                ):
                     raise ManifestError(
-                        f"artifacts: {record_id}: запланированные байты не совпадают с реестром"
+                        f"artifacts: {record_id}: запланированные байты "
+                        "не совпадают с реестром"
                     )
+
             else:
                 self._validate_artifact_file(artifact)
 
         for path_value in blob_specs:
             if path_value not in artifact_paths:
-                raise ManifestError(f"blob {path_value} не связан ни с одним артефактом")
+                raise ManifestError(
+                    f"blob {path_value} не связан ни с одним артефактом"
+                )
 
         state = {"new": 0, "unchanged": 0}
+
         for path_value, spec in blob_specs.items():
             target = self._resolve_data_path(path_value)
+
             if not target.exists():
                 state["new"] += 1
+
             elif self._file_matches(target, spec):
                 state["unchanged"] += 1
+
             else:
                 raise ManifestConflictError(
                     f"Путь {path_value} уже занят другими байтами"
                 )
+
         return state
 
     def _write_blobs(self, blobs: list[PlannedBlob]) -> tuple[int, int]:
+        """Атомарно записать новые файловые объекты без перезаписи существующих."""
+
         unique: dict[str, PlannedBlob] = {}
+
         for blob in blobs:
             actual_sha = sha256_bytes(blob.data)
+
             if actual_sha != blob.sha256:
                 raise ManifestError(
-                    f"blob {blob.relative_path}: заявлен SHA-256 {blob.sha256}, "
+                    f"blob {blob.relative_path}: заявлен SHA-256 "
+                    f"{blob.sha256}, "
                     f"получен {actual_sha}"
                 )
+
             previous = unique.get(blob.relative_path)
+
             if previous is not None and (
                 previous.sha256 != blob.sha256 or previous.data != blob.data
             ):
                 raise ManifestConflictError(
                     f"Два разных blob претендуют на путь {blob.relative_path}"
                 )
+
             unique[blob.relative_path] = blob
+
         written = unchanged = 0
+
         for blob in unique.values():
             target = self._resolve_data_path(blob.relative_path)
+
             if target.exists():
-                if not self._file_matches(target, _BlobSpec(blob.sha256, len(blob.data))):
+                existing_spec = _BlobSpec(blob.sha256, len(blob.data))
+
+                if not self._file_matches(target, existing_spec):
                     raise ManifestConflictError(
                         f"Путь {blob.relative_path} занят другими байтами"
                     )
+
                 unchanged += 1
                 continue
+
             target.parent.mkdir(parents=True, exist_ok=True)
-            fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+            file_descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{target.name}.",
+                dir=target.parent,
+            )
+
             try:
-                with os.fdopen(fd, "wb") as stream:
+                with os.fdopen(file_descriptor, "wb") as stream:
                     stream.write(blob.data)
                     stream.flush()
                     os.fsync(stream.fileno())
                 try:
                     # link создаёт конечное имя атомарно и никогда не
                     # перезаписывает уже существующий неизменяемый объект.
-                    os.link(temp_name, target)
+                    os.link(temporary_name, target)
+
                 except FileExistsError:
                     if not self._file_matches(
                         target, _BlobSpec(blob.sha256, len(blob.data))
                     ):
                         raise ManifestConflictError(
-                            f"Путь {blob.relative_path} конкурентно занят другими байтами"
+                            f"Путь {blob.relative_path} конкурентно занят "
+                            "другими байтами"
                         )
+
                     unchanged += 1
                     continue
+
             finally:
-                if os.path.exists(temp_name):
-                    os.unlink(temp_name)
+                if os.path.exists(temporary_name):
+                    os.unlink(temporary_name)
+
             written += 1
+
         return written, unchanged
 
     @staticmethod
     def _file_matches(path: Path, spec: _BlobSpec) -> bool:
+        """Проверить тип, размер и SHA-256 существующего файла."""
+
         return (
-            path.is_file()
-            and path.stat().st_size == spec.size
-            and sha256_file(path) == spec.sha256
+            path.is_file() and
+            path.stat().st_size == spec.size and
+            sha256_file(path) == spec.sha256
         )
 
     def _resolve_data_path(self, relative_path: str) -> Path:
+        """Разрешить относительный путь и запретить выход за каталог data/."""
+
         relative = Path(relative_path)
+
         if relative.is_absolute():
-            raise ManifestError(f"Путь артефакта должен быть относительным: {relative_path}")
+            raise ManifestError(
+                f"Путь артефакта должен быть относительным: {relative_path}"
+            )
+
         resolved = (self.project_root / relative).resolve()
         data_root = (self.project_root / "data").resolve()
+
         if not resolved.is_relative_to(data_root):
             raise ManifestError(f"Путь артефакта выходит за data/: {relative_path}")
+
         return resolved
 
     def _validate_artifact_file(self, artifact: dict[str, Any]) -> None:
+        """Сверить зарегистрированный артефакт с локальным файлом."""
+
         path_value = artifact.get("path")
+
         if path_value is None:
             return
+
         path = self._resolve_data_path(path_value)
         record_id = artifact["artifact_record_id"]
+
         if not path.is_file():
-            raise ManifestError(f"artifacts: {record_id}: файл не найден: {path_value}")
+            raise ManifestError(
+                f"artifacts: {record_id}: файл не найден: {path_value}"
+            )
+
         actual_size = path.stat().st_size
+
         if actual_size != artifact["bytes"]:
             raise ManifestError(
-                f"artifacts: {record_id}: размер {actual_size}, в реестре {artifact['bytes']}"
+                f"artifacts: {record_id}: размер {actual_size}, "
+                f"в реестре {artifact['bytes']}"
             )
+
         actual_sha = sha256_file(path)
+
         if actual_sha != artifact["sha256"]:
             raise ManifestError(
                 f"artifacts: {record_id}: SHA-256 файла не совпадает с реестром"
             )
+
         if artifact["artifact_id"] != f"sha256:{actual_sha}":
             raise ManifestError(
                 f"artifacts: {record_id}: artifact_id не соответствует SHA-256"
@@ -989,87 +1314,130 @@ class ManifestStore:
         *,
         updated_required: bool = True,
     ) -> None:
-        created = datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
+        """Проверить хронологический порядок временных полей записи."""
+
+        created = datetime.fromisoformat(
+            record["created_at"].replace("Z", "+00:00")
+        )
+
         if kind == "rights":
             record_id = record[PRIMARY_FIELDS[kind]]
             checked = date.fromisoformat(record["rights_checked_at"])
             now = datetime.now(tz=created.tzinfo)
+
             if created > now:
-                raise ManifestError(f"rights: {record_id}: created_at находится в будущем")
+                raise ManifestError(
+                    f"rights: {record_id}: created_at находится в будущем"
+                )
+
             if checked > now.date():
                 raise ManifestError(
                     f"rights: {record_id}: rights_checked_at находится в будущем"
                 )
+
             if checked > created.date():
                 raise ManifestError(
                     f"rights: {record_id}: rights_checked_at позже created_at"
                 )
+
             satisfied_at = record.get("conditions_satisfied_at")
+
             if satisfied_at:
                 satisfied = datetime.fromisoformat(satisfied_at.replace("Z", "+00:00"))
+
                 if satisfied > created:
                     raise ManifestError(
                         f"rights: {record_id}: conditions_satisfied_at позже created_at"
                     )
+
             return
+
         if not updated_required:
             return
+
         updated = datetime.fromisoformat(record["updated_at"].replace("Z", "+00:00"))
+
         if created > updated:
             record_id = record[PRIMARY_FIELDS[kind]]
             raise ManifestError(f"{kind}: {record_id}: created_at позже updated_at")
 
     @staticmethod
     def _validate_parent_cycles(artifacts: dict[str, dict[str, Any]]) -> None:
+        """Отклонить циклы в цепочках родительских артефактов."""
+
         by_artifact_id = {
             record["artifact_id"]: record
             for record in artifacts.values()
             if record.get("artifact_id")
         }
+
         for artifact_id in by_artifact_id:
             seen: set[str] = set()
             current = artifact_id
+
             while current:
                 if current in seen:
-                    raise ManifestError(f"artifacts: цикл parent_artifact_id около {current}")
+                    raise ManifestError(
+                        f"artifacts: цикл parent_artifact_id около {current}"
+                    )
+
                 seen.add(current)
                 parent = by_artifact_id.get(current, {}).get("parent_artifact_id")
                 current = parent
 
     @staticmethod
     def _atomic_append(path: Path, records: list[dict[str, Any]]) -> None:
+        """Атомарно дополнить JSONL через замену целого файла."""
+
         if not records:
             return
+
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = path.read_bytes() if path.exists() else b""
+
         if existing and not existing.endswith(b"\n"):
             raise ManifestError(f"{path}: отсутствует конечный перевод строки")
+
         addition = "".join(f"{canonical_json(record)}\n" for record in records).encode(
             "utf-8"
         )
-        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            dir=path.parent,
+        )
+
         try:
-            with os.fdopen(fd, "wb") as stream:
+            with os.fdopen(file_descriptor, "wb") as stream:
                 stream.write(existing)
                 stream.write(addition)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temp_name, path)
+
+            os.replace(temporary_name, path)
+
         finally:
-            if os.path.exists(temp_name):
-                os.unlink(temp_name)
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
 
     @contextmanager
     def _exclusive_lock(self) -> Iterator[None]:
+        """Удерживать эксклюзивную межпроцессную блокировку реестров."""
+
         lock_path = self.manifest_dir / ".registry.lock"
+
         with lock_path.open("a+b") as lock_file:
             try:
                 import fcntl
+
             except ImportError:  # pragma: no cover - проект запускается на Unix/macOS
                 yield
                 return
+
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
             try:
                 yield
+
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)

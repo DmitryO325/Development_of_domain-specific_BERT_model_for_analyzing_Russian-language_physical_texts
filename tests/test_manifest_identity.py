@@ -1,3 +1,5 @@
+"""Проверки устойчивой идентификации научных работ корпуса."""
+
 from __future__ import annotations
 
 import unittest
@@ -12,15 +14,23 @@ from src.corpus.profiles import get_source_profile
 
 
 class ManifestIdentityTests(unittest.TestCase):
+    """Проверки нормализации и выбора идентификатора научной работы."""
+
     def test_doi_normalization(self) -> None:
+        """Разные формы записи DOI должны давать одно значение."""
+
         variants = (
             "doi:10.1000/ABC.42",
             "https://doi.org/10.1000/ABC.42?utm_source=test",
             "HTTP://DX.DOI.ORG/10.1000/abc.42#fragment",
         )
-        self.assertEqual({normalize_doi(value) for value in variants}, {"10.1000/abc.42"})
+        normalized_dois = {normalize_doi(value) for value in variants}
+
+        self.assertEqual(normalized_dois, {"10.1000/abc.42"})
 
     def test_work_id_precedence(self) -> None:
+        """DOI должен иметь приоритет перед идентификатором источника."""
+
         identity = resolve_work_identity(
             source_id="S01_UFN_RU",
             title="Название",
@@ -33,6 +43,8 @@ class ManifestIdentityTests(unittest.TestCase):
         self.assertEqual(identity.confidence, "high")
 
     def test_native_id_is_second_choice(self) -> None:
+        """Идентификатор источника должен использоваться при отсутствии DOI."""
+
         identity = resolve_work_identity(
             source_id="S01_UFN_RU",
             title="Название",
@@ -47,6 +59,8 @@ class ManifestIdentityTests(unittest.TestCase):
         self.assertEqual(identity.confidence, "medium")
 
     def test_uuid5_fallback_is_stable_after_text_normalization(self) -> None:
+        """Резервный UUIDv5 должен быть устойчив к нормализации текста."""
+
         first = resolve_work_identity(
             source_id="source",
             title="  Квантовая—оптика ",
@@ -65,6 +79,8 @@ class ManifestIdentityTests(unittest.TestCase):
         self.assertEqual(str(WORK_ID_NAMESPACE), "1d018193-a92a-56b0-bcd2-2b29309b7a96")
 
     def test_url_canonicalization(self) -> None:
+        """Канонизация URL должна удалять технические различия адресов."""
+
         self.assertEqual(
             canonicalize_url(
                 "HTTPS://UFN.RU:443/ru//articles/2024/1/a/?utm_source=x&b=2&a=1#part"
@@ -73,6 +89,8 @@ class ManifestIdentityTests(unittest.TestCase):
         )
 
     def test_explicit_profile_requires_both_source_and_host(self) -> None:
+        """Явный профиль должен совпадать и с источником, и с доменом."""
+
         with self.assertRaises(ValueError):
             get_source_profile(
                 "ufn",

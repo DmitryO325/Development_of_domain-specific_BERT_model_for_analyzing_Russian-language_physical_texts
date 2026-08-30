@@ -9,8 +9,10 @@ import re
 import shutil
 import tempfile
 import time
+
 from pathlib import Path
 from typing import TYPE_CHECKING
+
 from urllib.parse import unquote, urlsplit
 
 from .base import fetch_bytes, normalize_whitespace
@@ -40,6 +42,7 @@ MIN_HEADER_PT = 50
 
 def cyrillic_letter_ratio(text: str) -> float:
     """Вычислить долю кириллицы среди всех букв текста."""
+
     letters = [character for character in text if character.isalpha()]
 
     if not letters:
@@ -56,10 +59,13 @@ def is_readable_russian(
     min_ratio: float = MIN_CYRILLIC_RATIO,
 ) -> bool:
     """Проверить, похож ли извлечённый текст на читаемый русский."""
+
     if min_chars < 0:
         raise ValueError("min_chars не может быть отрицательным")
+
     if not 0 <= min_ratio <= 1:
         raise ValueError("min_ratio должен быть в диапазоне от 0 до 1")
+
     if len(text.strip()) < min_chars:
         return False
 
@@ -68,7 +74,9 @@ def is_readable_russian(
 
 def pdf_url_from_article_path(article_path: str) -> str | None:
     """Построить резервный PDF-адрес по пути статьи УФН."""
+
     normalized_path = f"/{article_path.strip('/')}"
+
     matched = re.fullmatch(
         r"/ru/articles/(\d{4})/(\d+)/([a-z])/?",
         normalized_path,
@@ -76,7 +84,7 @@ def pdf_url_from_article_path(article_path: str) -> str | None:
     )
 
     if not matched:
-        return None
+        return
 
     year = int(matched.group(1))
     volume = int(matched.group(2))
@@ -90,9 +98,12 @@ def pdf_url_from_article_path(article_path: str) -> str | None:
 
 def pdf_filename(pdf_url: str) -> str:
     """Получить безопасное локальное имя PDF из URL."""
+
     name = Path(unquote(urlsplit(pdf_url).path)).name
+
     if not name:
         raise ValueError(f"В URL нет имени файла: {pdf_url}")
+
     return name if name.lower().endswith(".pdf") else f"{name}.pdf"
 
 
@@ -103,15 +114,19 @@ def download_pdf(
     delay_seconds: float = 0.0,
 ) -> Path:
     """Скачать PDF, проверить сигнатуру и сохранить файл."""
+
     destination.parent.mkdir(parents=True, exist_ok=True)
+
     if delay_seconds:
         time.sleep(delay_seconds)
+
     data = fetch_bytes(pdf_url, delay_seconds=delay_seconds)
 
     if not data.startswith(b"%PDF") or b"%%EOF" not in data[-4096:]:
         raise ValueError(f"Не PDF: {pdf_url} ({data[:32]!r})")
 
     temporary_path: Path | None = None
+
     try:
         with tempfile.NamedTemporaryFile(
             mode="wb",
@@ -122,7 +137,9 @@ def download_pdf(
         ) as temporary_file:
             temporary_file.write(data)
             temporary_path = Path(temporary_file.name)
+
         temporary_path.replace(destination)
+
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
@@ -132,8 +149,10 @@ def download_pdf(
 
 def _fitz_open(path: Path) -> fitz.Document:
     """Открыть PDF через PyMuPDF с понятной ошибкой о зависимости."""
+
     try:
         import fitz  # pymupdf
+
     except ImportError as exception:
         raise ImportError("Установите: pip install pymupdf") from exception
 
@@ -142,6 +161,7 @@ def _fitz_open(path: Path) -> fitz.Document:
 
 def _require_tesseract() -> None:
     """Проверить, что исполняемый файл Tesseract доступен в PATH."""
+
     if not shutil.which("tesseract"):
         raise RuntimeError(
             "Нужен Tesseract OCR: brew install tesseract tesseract-lang (macOS)"
@@ -155,6 +175,7 @@ def _column_clips(
     split: float = COLUMN_SPLIT_RATIO,
 ) -> tuple[fitz.Rect, fitz.Rect]:
     """Разделить страницу на левую и правую колонки."""
+
     import fitz
 
     rectangle = page.rect
@@ -168,6 +189,7 @@ def _column_clips(
 
 def _ocr_pixmap(pixmap: fitz.Pixmap, *, lang: str = "rus") -> str:
     """Распознать текст на растровом изображении PyMuPDF."""
+
     import pytesseract
     from PIL import Image
 
@@ -183,6 +205,7 @@ def _ocr_page_region(
     lang: str = "rus",
 ) -> str:
     """Распознать заданную прямоугольную область PDF-страницы."""
+
     import fitz
 
     matrix = fitz.Matrix(dpi / 72, dpi / 72)
@@ -198,6 +221,7 @@ def _ocr_columns_in_rect(
     lang: str = "rus",
 ) -> str:
     """Распознать две колонки: сначала левую, затем правую."""
+
     left, right = _column_clips(page)
     left = left & rectangle
     right = right & rectangle
@@ -220,6 +244,7 @@ def _ocr_page_full(
     lang: str = "rus",
 ) -> str:
     """Распознать всю PDF-страницу или одну её область."""
+
     import fitz
 
     matrix = fitz.Matrix(dpi / 72, dpi / 72)
@@ -238,14 +263,16 @@ def _detect_two_column_split_y(
     *,
     page_index: int = 0,
 ) -> float | None:
-    """Y (pt) начала двухколоночной части страницы.
+    """
+    Y (pt) начала двухколоночной части страницы.
 
     None — вся страница в 2 колонки с верха (типично со 2-й страницы).
     page.rect.height — вся страница одна колонка (нет gutter после шапки).
     иначе — сверху одна колонка до Y, ниже 2 колонки (на стр. 1 после PACS/DOI).
     """
+
     if page_index > 0:
-        return None
+        return
 
     import fitz
 
@@ -268,6 +295,7 @@ def _detect_two_column_split_y(
 
     def strip_gutter_score(y0: int, y1: int) -> float:
         """Оценить, насколько горизонтальная полоса похожа на две колонки."""
+
         left = right = center = 0
 
         for y_px in range(y0, y1, 2):
@@ -326,6 +354,7 @@ def _ocr_page_layout(
     lang: str = "rus",
 ) -> str:
     """Распознать шапку в одну колонку, а основной текст — в две."""
+
     import fitz
 
     rectangle = page.rect
@@ -351,12 +380,19 @@ def _ocr_page_layout(
 
 def extract_text_from_pdf(path: Path) -> str:
     """Извлечь встроенный текстовый слой из всех страниц PDF."""
+
     parts: list[str] = []
     document = _fitz_open(path)
 
     try:
         for page in document:
-            parts.append(_clean_pdf_lines(page.get_text("text")))
+            page_text = page.get_text("text")
+
+            if not isinstance(page_text, str):
+                raise TypeError("PyMuPDF вернул не строку для режима text")
+
+            parts.append(_clean_pdf_lines(page_text))
+
     finally:
         document.close()
 
@@ -366,19 +402,29 @@ def extract_text_from_pdf(path: Path) -> str:
 def extract_text_from_pdf_ocr(
     path: Path, *, lang: str = "rus", dpi: int = OCR_DPI
 ) -> str:
-    """Распознать PDF УФН с учётом смешанной вёрстки.
+    """
+    Распознать PDF УФН с учётом смешанной вёрстки.
 
     - верх страницы (название, PACS, DOI) — одна колонка на всю ширину;
     - ниже — левая колонка целиком, затем правая.
     """
+
     _require_tesseract()
 
     parts: list[str] = []
     document = _fitz_open(path)
 
     try:
-        for i, page in enumerate(document):
-            page_text = _ocr_page_layout(page, page_index=i, dpi=dpi, lang=lang)
+        for page_index in range(document.page_count):
+            page = document.load_page(page_index)
+
+            page_text = _ocr_page_layout(
+                page,
+                page_index=page_index,
+                dpi=dpi,
+                lang=lang,
+            )
+
             parts.append(_clean_pdf_lines(page_text))
 
     finally:
@@ -388,13 +434,16 @@ def extract_text_from_pdf_ocr(
 
 
 def _clean_pdf_lines(text: str) -> str:
-    """Удалить номер страницы только с её верхней или нижней границы.
+    """
+    Удалить номер страницы только с её верхней или нижней границы.
 
     Отдельные числа внутри текста сохраняются: это могут быть годы
     или физические величины.
     """
+
     lines = text.splitlines()
     nonempty_indices = [index for index, line in enumerate(lines) if line.strip()]
+
     if not nonempty_indices:
         return ""
 
@@ -409,6 +458,7 @@ def save_text_sidecar(
     pdf_path: Path, text: str, method: str, *, text_dir: Path
 ) -> Path:
     """Сохранить извлечённый текст и технический заголовок в UTF-8."""
+
     text_dir.mkdir(parents=True, exist_ok=True)
     output_path = text_dir / f"{pdf_path.stem}_{method}.txt"
 
@@ -417,12 +467,14 @@ def save_text_sidecar(
         if method == "pdf_ocr_layout"
         else "embedded text layer"
     )
+
     header = (
         f"# extracted via {method}\n"
         f"# source pdf: {pdf_path.name}\n"
         f"# chars: {len(text)}\n"
         f"# layout: {layout}\n\n"
     )
+
     output_path.write_text(header + text, encoding="utf-8")
     return output_path
 
@@ -433,11 +485,13 @@ def extract_best_text(
     text_dir: Path | None = None,
     try_ocr: bool = True,
 ) -> tuple[str, str, bool]:
-    """Выбрать лучший текст: встроенный PDF-слой, затем OCR.
+    """
+    Выбрать лучший текст: встроенный PDF-слой, затем OCR.
 
     Возвращает кортеж ``(текст, метод, читаемость)``. Если ``text_dir``
     задан, имя сопутствующего файла всегда совпадает с возвращённым методом.
     """
+
     raw = extract_text_from_pdf(pdf_path)
 
     if is_readable_russian(raw):
@@ -476,41 +530,51 @@ def extract_text_from_pdf_checked(
     try_ocr: bool = True,
 ) -> tuple[str, bool]:
     """Извлечь текст и вернуть только текст и признак читаемости."""
+
     text, _method, readable = extract_best_text(
         path,
         text_dir=text_dir,
         try_ocr=try_ocr,
     )
+
     return text, readable
 
 
 def _is_valid_cached_pdf(path: Path) -> bool:
     """Проверить сигнатуру и маркер конца кэшированного PDF."""
+
     if not path.is_file() or path.stat().st_size < 8:
         return False
+
     with path.open("rb") as file:
         if file.read(4) != b"%PDF":
             return False
+
         file.seek(max(0, path.stat().st_size - 4096))
         return b"%%EOF" in file.read()
 
 
 def _source_url_path(pdf_path: Path) -> Path:
     """Построить путь файла с URL-источником кэша."""
+
     return pdf_path.with_suffix(f"{pdf_path.suffix}.source-url")
 
 
 def _cache_path(pdf_url: str, cache_dir: Path) -> Path:
     """Выбрать путь кэша без коллизий одинаковых имён PDF."""
+
     original = cache_dir / pdf_filename(pdf_url)
     source_path = _source_url_path(original)
+
     if not original.exists() or not source_path.exists():
         return original
 
     try:
         cached_url = source_path.read_text(encoding="utf-8").strip()
+
     except OSError:
         cached_url = ""
+
     if cached_url == pdf_url:
         return original
 
@@ -520,6 +584,7 @@ def _cache_path(pdf_url: str, cache_dir: Path) -> Path:
 
 def _record_source_url(pdf_path: Path, pdf_url: str) -> None:
     """Сохранить URL, которому соответствует локальный PDF."""
+
     source_path = _source_url_path(pdf_path)
     source_path.write_text(f"{pdf_url}\n", encoding="utf-8")
 
@@ -533,10 +598,11 @@ def pdf_to_text(
     text_dir: Path | None = None,
     try_ocr: bool = True,
 ) -> tuple[str, Path, bool, str]:
-    """Скачать или взять из кэша PDF и извлечь лучший текст.
-
+    """
+    Скачать или взять из кэша PDF и извлечь лучший текст.
     Возвращает ``(текст, путь PDF, читаемость, метод)``.
     """
+
     local = _cache_path(pdf_url, cache_dir)
     used_cache = reuse_cached and _is_valid_cached_pdf(local)
 
@@ -553,17 +619,22 @@ def pdf_to_text(
             text_dir=text_dir,
             try_ocr=try_ocr,
         )
+
     except (OSError, RuntimeError, ValueError):
         if not used_cache:
             raise
+
         LOGGER.warning("Повреждённый PDF в кэше %s; скачиваем заново", local)
         download_pdf(pdf_url, local, delay_seconds=delay_seconds)
         _record_source_url(local, pdf_url)
+
         text, method, readable = extract_best_text(
             local,
             text_dir=text_dir,
             try_ocr=try_ocr,
         )
+
     if not _source_url_path(local).exists():
         _record_source_url(local, pdf_url)
+
     return text, local, readable, method
