@@ -24,6 +24,7 @@ from src.collect.base import (
     html_to_text,
 )
 from src.collect.pdf_text import (
+    PdfPageText,
     _clean_pdf_lines,
     download_pdf,
     extract_best_text,
@@ -304,15 +305,16 @@ class PdfTextTests(unittest.TestCase):
             root = Path(temporary_directory)
             pdf_path = root / "article.pdf"
             with patch(
-                "src.collect.pdf_text.extract_text_from_pdf",
-                return_value=readable_text,
+                "src.collect.pdf_text.extract_pages_from_pdf",
+                return_value=(PdfPageText(0, 1, readable_text),),
             ):
-                _text, method, readable = extract_best_text(
+                text, method, readable = extract_best_text(
                     pdf_path,
                     text_dir=root,
                     try_ocr=False,
                 )
 
+            self.assertEqual(text, readable_text.strip())
             self.assertTrue(readable)
             self.assertEqual(method, "pdf")
             self.assertTrue((root / f"article_{method}.txt").is_file())

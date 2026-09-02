@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import logging
+import os
 import re
 import shutil
 import tempfile
 import time
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +41,58 @@ LAYOUT_SCAN_DPI = 150
 SPLIT_MARGIN_PT = 10
 # Минимальная высота одноколоночной шапки.
 MIN_HEADER_PT = 50
+
+PAGE_EXPORT_SCHEMA_VERSION = "pdf-page-export-v1"
+SUPPORTED_EXTRACTION_METHODS = frozenset(
+    {"pdf", "pdf_ocr_layout", "pdf_unreadable"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PdfPageText:
+    """Текст одной физической страницы PDF с устойчивой нумерацией."""
+
+    page_index: int
+    page_number: int
+    text: str
+
+    def __post_init__(self) -> None:
+        """Проверить связь машинного индекса и человеческого номера."""
+
+        if self.page_index < 0:
+            raise ValueError("page_index не может быть отрицательным")
+
+        if self.page_number != self.page_index + 1:
+            raise ValueError("page_number должен быть равен page_index + 1")
+
+
+@dataclass(frozen=True, slots=True)
+class PdfTextExtraction:
+    """Выбранный результат извлечения всего PDF и составляющие его страницы."""
+
+    text: str
+    method: str
+    readable: bool
+    pages: tuple[PdfPageText, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExportedPdfPage:
+    """Метаданные сохранённого постраничного TXT-файла."""
+
+    page_index: int
+    page_number: int
+    path: Path
+    sha256: str
+    characters: int
+
+
+@dataclass(frozen=True, slots=True)
+class PdfPageExportResult:
+    """Результат записи постраничных TXT-файлов и их индекса."""
+
+    manifest_path: Path
+    pages: tuple[ExportedPdfPage, ...]
 
 
 def cyrillic_letter_ratio(text: str) -> float:
@@ -378,59 +433,108 @@ def _ocr_page_layout(
     return t_top or t_bottom
 
 
-def extract_text_from_pdf(path: Path) -> str:
-    """Извлечь встроенный текстовый слой из всех страниц PDF."""
-
-    parts: list[str] = []
-    document = _fitz_open(path)
-
-    try:
-        for page in document:
-            page_text = page.get_text("text")
-
-            if not isinstance(page_text, str):
-                raise TypeError("PyMuPDF вернул не строку для режима text")
-
-            parts.append(_clean_pdf_lines(page_text))
-
-    finally:
-        document.close()
-
-    return _clean_pdf_lines(normalize_whitespace("\n".join(parts)))
-
-
-def extract_text_from_pdf_ocr(
-    path: Path, *, lang: str = "rus", dpi: int = OCR_DPI
+def _combine_page_texts(
+    pages: tuple[PdfPageText, ...],
+    *,
+    method: str,
 ) -> str:
-    """
-    Распознать PDF УФН с учётом смешанной вёрстки.
+    """Собрать общий текст, не теряя выбранный порядок страниц."""
 
-    - верх страницы (название, PACS, DOI) — одна колонка на всю ширину;
-    - ниже — левая колонка целиком, затем правая.
-    """
+    if method not in SUPPORTED_EXTRACTION_METHODS:
+        raise ValueError(f"Неизвестный метод извлечения: {method}")
 
-    _require_tesseract()
+    separator = "\n\n" if method == "pdf_ocr_layout" else "\n"
+    combined = separator.join(page.text for page in pages)
 
-    parts: list[str] = []
+    return _clean_pdf_lines(normalize_whitespace(combined))
+
+
+def extract_pages_from_pdf(path: Path) -> tuple[PdfPageText, ...]:
+    """Извлечь встроенный текст отдельно из каждой физической страницы PDF."""
+
+    pages: list[PdfPageText] = []
     document = _fitz_open(path)
 
     try:
         for page_index in range(document.page_count):
             page = document.load_page(page_index)
+            page_text = page.get_text("text")
 
+            if not isinstance(page_text, str):
+                raise TypeError("PyMuPDF вернул не строку для режима text")
+
+            pages.append(
+                PdfPageText(
+                    page_index=page_index,
+                    page_number=page_index + 1,
+                    text=_clean_pdf_lines(page_text),
+                )
+            )
+
+    finally:
+        document.close()
+
+    return tuple(pages)
+
+
+def extract_pages_from_pdf_ocr(
+    path: Path,
+    *,
+    lang: str = "rus",
+    dpi: int = OCR_DPI,
+) -> tuple[PdfPageText, ...]:
+    """
+    Распознать каждую страницу PDF УФН с учётом смешанной вёрстки.
+
+    Верх первой страницы распознаётся как одна колонка, а основной текст —
+    как левая и правая колонки. Граница каждой физической страницы сохраняется.
+    """
+
+    _require_tesseract()
+
+    pages: list[PdfPageText] = []
+    document = _fitz_open(path)
+
+    try:
+        for page_index in range(document.page_count):
+            page = document.load_page(page_index)
             page_text = _ocr_page_layout(
                 page,
                 page_index=page_index,
                 dpi=dpi,
                 lang=lang,
             )
-
-            parts.append(_clean_pdf_lines(page_text))
+            pages.append(
+                PdfPageText(
+                    page_index=page_index,
+                    page_number=page_index + 1,
+                    text=_clean_pdf_lines(page_text),
+                )
+            )
 
     finally:
         document.close()
 
-    return _clean_pdf_lines(normalize_whitespace("\n\n".join(parts)))
+    return tuple(pages)
+
+
+def extract_text_from_pdf(path: Path) -> str:
+    """Извлечь встроенный текстовый слой из всех страниц PDF."""
+
+    pages = extract_pages_from_pdf(path)
+    return _combine_page_texts(pages, method="pdf")
+
+
+def extract_text_from_pdf_ocr(
+    path: Path,
+    *,
+    lang: str = "rus",
+    dpi: int = OCR_DPI,
+) -> str:
+    """Распознать все страницы PDF УФН с учётом смешанной вёрстки."""
+
+    pages = extract_pages_from_pdf_ocr(path, lang=lang, dpi=dpi)
+    return _combine_page_texts(pages, method="pdf_ocr_layout")
 
 
 def _clean_pdf_lines(text: str) -> str:
@@ -479,40 +583,303 @@ def save_text_sidecar(
     return output_path
 
 
-def extract_best_text(
+def _write_bytes_atomic(path: Path, data: bytes) -> None:
+    """Атомарно заменить файл заданными байтами."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".part",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(data)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+
+        temporary_path.replace(path)
+
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _file_sha256(path: Path) -> str:
+    """Вычислить SHA-256 файла без загрузки целого файла в память."""
+
+    digest = hashlib.sha256()
+
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+
+    return digest.hexdigest()
+
+
+def _page_export_record(
+    page: ExportedPdfPage,
+    *,
+    output_dir: Path,
+    source_pdf_path: str,
+    source_pdf_sha256: str,
+    extraction_method: str,
+    extraction_version: str,
+) -> dict[str, str | int]:
+    """Собрать одну строку индекса постраничного экспорта."""
+
+    return {
+        "schema_version": PAGE_EXPORT_SCHEMA_VERSION,
+        "source_pdf_path": source_pdf_path,
+        "source_pdf_sha256": source_pdf_sha256,
+        "extraction_method": extraction_method,
+        "extraction_version": extraction_version,
+        "page_index": page.page_index,
+        "page_number": page.page_number,
+        "path": page.path.relative_to(output_dir).as_posix(),
+        "sha256": page.sha256,
+        "characters": page.characters,
+    }
+
+
+def _raise_page_export_conflict(output_dir: Path, detail: str) -> None:
+    """Отклонить изменение уже опубликованного набора страниц."""
+
+    raise ValueError(
+        f"Конфликт постраничного экспорта {output_dir}: {detail}; "
+        "смените extraction_version"
+    )
+
+
+def _verify_published_page_export(
+    output_dir: Path,
+    *,
+    expected_files: dict[str, bytes],
+) -> None:
+    """Проверить неизменность уже опубликованного набора без перезаписи."""
+
+    if output_dir.is_symlink() or not output_dir.is_dir():
+        _raise_page_export_conflict(output_dir, "путь не является каталогом")
+
+    actual_names = {path.name for path in output_dir.iterdir()}
+    expected_names = set(expected_files)
+
+    if actual_names != expected_names:
+        _raise_page_export_conflict(output_dir, "состав файлов отличается")
+
+    for file_name, expected_data in expected_files.items():
+        file_path = output_dir / file_name
+
+        if file_path.is_symlink() or not file_path.is_file():
+            _raise_page_export_conflict(
+                output_dir,
+                f"{file_name} не является обычным файлом",
+            )
+
+        if file_path.read_bytes() != expected_data:
+            _raise_page_export_conflict(
+                output_dir,
+                f"содержимое {file_name} отличается",
+            )
+
+
+def export_pdf_pages(
+    pdf_path: Path,
+    extraction: PdfTextExtraction,
+    output_dir: Path,
+    *,
+    extraction_version: str,
+    source_pdf_path: str | None = None,
+    source_pdf_sha256: str | None = None,
+) -> PdfPageExportResult:
+    """Сохранить чистый TXT каждой страницы и воспроизводимый JSONL-индекс."""
+
+    if extraction.method not in SUPPORTED_EXTRACTION_METHODS:
+        raise ValueError(f"Неизвестный метод извлечения: {extraction.method}")
+
+    if not extraction_version.strip():
+        raise ValueError("extraction_version не может быть пустой")
+
+    if not extraction.pages:
+        raise ValueError(f"PDF не содержит страниц: {pdf_path}")
+
+    for expected_index, page in enumerate(extraction.pages):
+        if page.page_index != expected_index:
+            raise ValueError("Страницы должны идти подряд начиная с page_index=0")
+
+    combined_text = _combine_page_texts(
+        extraction.pages,
+        method=extraction.method,
+    )
+
+    if combined_text != extraction.text:
+        raise ValueError(
+            "Общий текст не совпадает с текстом, собранным из страниц"
+        )
+
+    actual_source_sha256 = _file_sha256(pdf_path)
+
+    if (
+        source_pdf_sha256 is not None
+        and source_pdf_sha256 != actual_source_sha256
+    ):
+        raise ValueError(f"SHA-256 исходного PDF не совпадает: {pdf_path}")
+
+    source_label = source_pdf_path or pdf_path.as_posix()
+    exported_pages: list[ExportedPdfPage] = []
+    page_files: dict[str, bytes] = {}
+
+    for page in extraction.pages:
+        file_name = f"page_{page.page_number:04d}.txt"
+        output_path = output_dir / file_name
+        encoded_text = page.text.encode("utf-8")
+        sha256 = hashlib.sha256(encoded_text).hexdigest()
+        page_files[file_name] = encoded_text
+        exported_pages.append(
+            ExportedPdfPage(
+                page_index=page.page_index,
+                page_number=page.page_number,
+                path=output_path,
+                sha256=sha256,
+                characters=len(page.text),
+            )
+        )
+
+    records = [
+        _page_export_record(
+            page,
+            output_dir=output_dir,
+            source_pdf_path=source_label,
+            source_pdf_sha256=actual_source_sha256,
+            extraction_method=extraction.method,
+            extraction_version=extraction_version,
+        )
+        for page in exported_pages
+    ]
+    serialized_records = [
+        json.dumps(
+            record,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for record in records
+    ]
+    manifest_data = "".join(
+        f"{serialized_record}\n"
+        for serialized_record in serialized_records
+    ).encode("utf-8")
+    expected_files = {**page_files, "pages.jsonl": manifest_data}
+    manifest_path = output_dir / "pages.jsonl"
+
+    if output_dir.exists() or output_dir.is_symlink():
+        _verify_published_page_export(
+            output_dir,
+            expected_files=expected_files,
+        )
+
+        return PdfPageExportResult(
+            manifest_path=manifest_path,
+            pages=tuple(exported_pages),
+        )
+
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_path = Path(
+        tempfile.mkdtemp(
+            prefix=f".{output_dir.name}.",
+            suffix=".staging",
+            dir=output_dir.parent,
+        )
+    )
+
+    try:
+        for file_name, data in expected_files.items():
+            _write_bytes_atomic(staging_path / file_name, data)
+
+        if output_dir.exists() or output_dir.is_symlink():
+            _verify_published_page_export(
+                output_dir,
+                expected_files=expected_files,
+            )
+
+        else:
+            try:
+                staging_path.rename(output_dir)
+
+            except OSError:
+                if not output_dir.exists() and not output_dir.is_symlink():
+                    raise
+
+                _verify_published_page_export(
+                    output_dir,
+                    expected_files=expected_files,
+                )
+
+    finally:
+        if staging_path.exists():
+            shutil.rmtree(staging_path)
+
+    return PdfPageExportResult(
+        manifest_path=manifest_path,
+        pages=tuple(exported_pages),
+    )
+
+
+def extract_best_text_result(
     pdf_path: Path,
     *,
     text_dir: Path | None = None,
     try_ocr: bool = True,
-) -> tuple[str, str, bool]:
+) -> PdfTextExtraction:
     """
-    Выбрать лучший текст: встроенный PDF-слой, затем OCR.
+    Выбрать лучший общий и постраничный текст: PDF-слой, затем OCR.
 
-    Возвращает кортеж ``(текст, метод, читаемость)``. Если ``text_dir``
-    задан, имя сопутствующего файла всегда совпадает с возвращённым методом.
+    Один проход каждого способа сразу даёт общий текст и устойчивые границы
+    физических страниц. OCR для одного варианта повторно не запускается.
     """
 
-    raw = extract_text_from_pdf(pdf_path)
+    raw_pages = extract_pages_from_pdf(pdf_path)
+    raw = _combine_page_texts(raw_pages, method="pdf")
 
     if is_readable_russian(raw):
         if text_dir:
             save_text_sidecar(pdf_path, raw, "pdf", text_dir=text_dir)
 
-        return raw, "pdf", True
+        return PdfTextExtraction(
+            text=raw,
+            method="pdf",
+            readable=True,
+            pages=raw_pages,
+        )
 
     if try_ocr:
         try:
-            ocr = extract_text_from_pdf_ocr(pdf_path)
+            ocr_pages = extract_pages_from_pdf_ocr(pdf_path)
             method = "pdf_ocr_layout"
+            ocr = _combine_page_texts(ocr_pages, method=method)
 
             if text_dir:
                 save_text_sidecar(pdf_path, ocr, method, text_dir=text_dir)
 
             if is_readable_russian(ocr):
-                return ocr, method, True
+                return PdfTextExtraction(
+                    text=ocr,
+                    method=method,
+                    readable=True,
+                    pages=ocr_pages,
+                )
 
             if len(ocr) >= MIN_PDF_TEXT_CHARS:
-                return ocr, method, False
+                return PdfTextExtraction(
+                    text=ocr,
+                    method=method,
+                    readable=False,
+                    pages=ocr_pages,
+                )
 
         except (ImportError, OSError, RuntimeError, ValueError) as exception:
             LOGGER.warning("Не удалось распознать %s: %s", pdf_path, exception)
@@ -520,7 +887,33 @@ def extract_best_text(
     if text_dir:
         save_text_sidecar(pdf_path, raw, "pdf_unreadable", text_dir=text_dir)
 
-    return raw, "pdf_unreadable", False
+    return PdfTextExtraction(
+        text=raw,
+        method="pdf_unreadable",
+        readable=False,
+        pages=raw_pages,
+    )
+
+
+def extract_best_text(
+    pdf_path: Path,
+    *,
+    text_dir: Path | None = None,
+    try_ocr: bool = True,
+) -> tuple[str, str, bool]:
+    """
+    Выбрать лучший текст и вернуть совместимый кортеж результата.
+
+    Если ``text_dir`` задан, имя сопутствующего файла совпадает с методом.
+    """
+
+    result = extract_best_text_result(
+        pdf_path,
+        text_dir=text_dir,
+        try_ocr=try_ocr,
+    )
+
+    return result.text, result.method, result.readable
 
 
 def extract_text_from_pdf_checked(

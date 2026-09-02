@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -22,6 +23,10 @@ from .registration import RegistrationOptions
 
 GENRES = {"research_article", "review_article", "short_communication", "other"}
 ELIGIBILITY_STATUSES = {"pending", "eligible", "rejected", "quarantined"}
+
+
+class _DuplicateJsonKeyError(ValueError):
+    """JSON-объект содержит один ключ более одного раза."""
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,69 @@ class LocalFileRegistration:
     acquisition_agent: str
     eligibility_status: str
     exclusion_reason: str | None
+
+
+def read_local_file_registrations(path: Path) -> list[LocalFileRegistration]:
+    """Прочитать непустой JSONL с карточками локальных PDF-файлов."""
+
+    if not path.is_file():
+        raise ValueError(f"Файл карточек не найден: {path}")
+
+    registrations: list[LocalFileRegistration] = []
+
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        if not raw_line.strip():
+            continue
+
+        try:
+            parsed_record: object = json.loads(
+                raw_line,
+                object_pairs_hook=_object_without_duplicate_keys,
+            )
+
+        except (json.JSONDecodeError, _DuplicateJsonKeyError) as exception:
+            raise ValueError(
+                f"{path}:{line_number}: некорректный JSON: {exception}"
+            ) from exception
+
+        if not isinstance(parsed_record, dict):
+            raise ValueError(
+                f"{path}:{line_number}: строка должна содержать JSON-объект"
+            )
+
+        try:
+            registration = LocalFileRegistration(**parsed_record)
+
+        except TypeError as exception:
+            raise ValueError(
+                f"{path}:{line_number}: неверный набор полей карточки: {exception}"
+            ) from exception
+
+        registrations.append(registration)
+
+    if not registrations:
+        raise ValueError(f"Файл карточек пуст: {path}")
+
+    return registrations
+
+
+def _object_without_duplicate_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    """Собрать JSON-объект и отклонить повторяющиеся ключи."""
+
+    result: dict[str, Any] = {}
+
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKeyError(f"повторный ключ {key!r}")
+
+        result[key] = value
+
+    return result
 
 
 def plan_local_file(

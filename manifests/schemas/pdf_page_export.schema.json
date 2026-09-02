@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:pdf-page-export:v1",
+  "title": "Строка индекса постраничного экспорта PDF",
+  "description": "Одна строка pages.jsonl, созданная функцией export_pdf_pages.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_pdf_path",
+    "source_pdf_sha256",
+    "extraction_method",
+    "extraction_version",
+    "page_index",
+    "page_number",
+    "path",
+    "sha256",
+    "characters"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "pdf-page-export-v1"
+    },
+    "source_pdf_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_pdf_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "extraction_method": {
+      "type": "string",
+      "enum": ["pdf", "pdf_ocr_layout", "pdf_unreadable"]
+    },
+    "extraction_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "page_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^page_[0-9]{4,}\\.txt$"
+    },
+    "sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "characters": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

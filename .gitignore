@@ -222,6 +222,7 @@ Desktop.ini
 data/raw/**
 data/extracted/**
 data/processed/**
+data/qa/**
 !data/raw/.gitkeep
 !data/extracted/.gitkeep
 !data/processed/.gitkeep

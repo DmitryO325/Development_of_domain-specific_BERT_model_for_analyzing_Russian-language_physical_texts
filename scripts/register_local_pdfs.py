@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 from pathlib import Path
@@ -16,8 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.corpus.local_registration import (  # noqa: E402
-    LocalFileRegistration,
     plan_local_file,
+    read_local_file_registrations,
 )
 from src.corpus.manifests import (  # noqa: E402
     ManifestConcurrencyError,
@@ -32,73 +31,6 @@ from src.corpus.registration import (  # noqa: E402
 )
 
 MAX_COMMIT_ATTEMPTS = 3
-
-
-class _DuplicateJsonKeyError(ValueError):
-    """JSON-объект содержит один ключ более одного раза."""
-
-
-def _object_without_duplicate_keys(
-    pairs: list[tuple[str, Any]],
-) -> dict[str, Any]:
-    """Собрать JSON-объект и отклонить повторяющиеся ключи."""
-
-    result: dict[str, Any] = {}
-
-    for key, value in pairs:
-        if key in result:
-            raise _DuplicateJsonKeyError(f"повторный ключ {key!r}")
-
-        result[key] = value
-
-    return result
-
-
-def _read_registrations(path: Path) -> list[LocalFileRegistration]:
-    """Прочитать непустой JSONL с карточками локальных PDF."""
-
-    if not path.is_file():
-        raise ValueError(f"Файл карточек не найден: {path}")
-
-    registrations: list[LocalFileRegistration] = []
-
-    for line_number, raw_line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(),
-        start=1,
-    ):
-        if not raw_line.strip():
-            continue
-
-        try:
-            record = json.loads(
-                raw_line,
-                object_pairs_hook=_object_without_duplicate_keys,
-            )
-
-        except (json.JSONDecodeError, _DuplicateJsonKeyError) as exception:
-            raise ValueError(
-                f"{path}:{line_number}: некорректный JSON: {exception}"
-            ) from exception
-
-        if not isinstance(record, dict):
-            raise ValueError(
-                f"{path}:{line_number}: строка должна содержать JSON-объект"
-            )
-
-        try:
-            registration = LocalFileRegistration(**record)
-
-        except TypeError as exception:
-            raise ValueError(
-                f"{path}:{line_number}: неверный набор полей карточки: {exception}"
-            ) from exception
-
-        registrations.append(registration)
-
-    if not registrations:
-        raise ValueError(f"Файл карточек пуст: {path}")
-
-    return registrations
 
 
 def _combine_plans(plans: list[ManifestPlan]) -> ManifestPlan:
@@ -208,7 +140,7 @@ def main(arguments: list[str] | None = None) -> int:
         response_representation="pdf",
         request_context_type="work",
     )
-    registrations = _read_registrations(options.input)
+    registrations = read_local_file_registrations(options.input)
     plan = _combine_plans(
         [
             plan_local_file(
