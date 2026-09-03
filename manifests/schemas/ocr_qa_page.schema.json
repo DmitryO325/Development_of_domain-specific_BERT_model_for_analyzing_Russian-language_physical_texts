@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:ocr-qa-page:v1",
+  "title": "Результат постраничной проверки OCR",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "page_qa_record_id",
+    "qa_run_id",
+    "page_sample_id",
+    "variant_id",
+    "work_id",
+    "source_id",
+    "source_group_id",
+    "source_pdf_artifact_id",
+    "candidate_artifact_id",
+    "publication_year",
+    "extraction_outcome",
+    "error_code",
+    "error_detail",
+    "page_index",
+    "page_number",
+    "printed_page_label",
+    "page_render_path",
+    "page_render_sha256",
+    "page_render_dpi",
+    "layout",
+    "scan_quality",
+    "selection_tags",
+    "selection_role",
+    "prose_regions",
+    "expected_block_order",
+    "observed_block_order",
+    "gold_prose_text_path",
+    "gold_prose_text_sha256",
+    "candidate_prose_text_path",
+    "candidate_prose_text_sha256",
+    "candidate_page_text_path",
+    "candidate_page_text_sha256",
+    "normalization_version",
+    "metric_version",
+    "reference_characters",
+    "character_substitutions",
+    "character_deletions",
+    "character_insertions",
+    "cer",
+    "reference_words",
+    "word_substitutions",
+    "word_deletions",
+    "word_insertions",
+    "wer",
+    "reading_order_status",
+    "reading_order_errors",
+    "formula_annotation_status",
+    "formula_reference_count",
+    "formula_record_count",
+    "gold_preparer_id",
+    "gold_verifier_id",
+    "review_mode",
+    "review_status",
+    "reviewer_id",
+    "review_notes",
+    "supersedes_page_qa_record_id",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "ocr-qa-page-v1"},
+    "page_qa_record_id": {"type": "string", "minLength": 1},
+    "qa_run_id": {"type": "string", "minLength": 1},
+    "page_sample_id": {"type": "string", "minLength": 1},
+    "variant_id": {"type": "string", "minLength": 1},
+    "work_id": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "source_group_id": {"type": "string", "minLength": 1},
+    "source_pdf_artifact_id": {"$ref": "#/$defs/artifactId"},
+    "candidate_artifact_id": {
+      "anyOf": [
+        {"$ref": "#/$defs/artifactId"},
+        {"type": "null"}
+      ]
+    },
+    "publication_year": {"type": "integer", "minimum": 1, "maximum": 9999},
+    "extraction_outcome": {
+      "type": "string",
+      "enum": ["succeeded", "failed"]
+    },
+    "error_code": {"type": ["string", "null"], "minLength": 1},
+    "error_detail": {"type": ["string", "null"], "minLength": 1},
+    "page_index": {"type": "integer", "minimum": 0},
+    "page_number": {"type": "integer", "minimum": 1},
+    "printed_page_label": {"type": ["string", "null"], "minLength": 1},
+    "page_render_path": {"type": "string", "minLength": 1},
+    "page_render_sha256": {"$ref": "#/$defs/sha256"},
+    "page_render_dpi": {"type": "integer", "minimum": 72},
+    "layout": {"$ref": "#/$defs/layout"},
+    "scan_quality": {"$ref": "#/$defs/scanQuality"},
+    "selection_tags": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "running_text",
+          "first_page",
+          "two_columns",
+          "mixed_layout",
+          "formula",
+          "non_russian_text",
+          "bibliography",
+          "table_or_figure",
+          "line_break_hyphenation",
+          "image_noise",
+          "other"
+        ]
+      }
+    },
+    "selection_role": {
+      "type": "string",
+      "enum": ["stratified_random", "manual_challenge"]
+    },
+    "prose_regions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/proseRegion"},
+      "contains": {
+        "properties": {"include_in_metrics": {"const": true}},
+        "required": ["include_in_metrics"]
+      },
+      "minContains": 1
+    },
+    "expected_block_order": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "observed_block_order": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "gold_prose_text_path": {"type": "string", "minLength": 1},
+    "gold_prose_text_sha256": {"$ref": "#/$defs/sha256"},
+    "candidate_prose_text_path": {"type": "string", "minLength": 1},
+    "candidate_prose_text_sha256": {"$ref": "#/$defs/sha256"},
+    "candidate_page_text_path": {"type": "string", "minLength": 1},
+    "candidate_page_text_sha256": {"$ref": "#/$defs/sha256"},
+    "normalization_version": {"type": "string", "minLength": 1},
+    "metric_version": {"type": "string", "minLength": 1},
+    "reference_characters": {"type": "integer", "minimum": 1},
+    "character_substitutions": {"type": "integer", "minimum": 0},
+    "character_deletions": {"type": "integer", "minimum": 0},
+    "character_insertions": {"type": "integer", "minimum": 0},
+    "cer": {"type": "number", "minimum": 0},
+    "reference_words": {"type": "integer", "minimum": 1},
+    "word_substitutions": {"type": "integer", "minimum": 0},
+    "word_deletions": {"type": "integer", "minimum": 0},
+    "word_insertions": {"type": "integer", "minimum": 0},
+    "wer": {"type": "number", "minimum": 0},
+    "reading_order_status": {
+      "type": "string",
+      "enum": ["correct", "noncritical_error", "critical_error", "not_applicable"]
+    },
+    "reading_order_errors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "column_interleaving",
+          "header_body_inversion",
+          "caption_intrusion",
+          "bibliography_interleaving",
+          "fragment_omission",
+          "fragment_duplication",
+          "other"
+        ]
+      }
+    },
+    "formula_annotation_status": {
+      "type": "string",
+      "enum": ["completed", "not_selected", "needs_adjudication"]
+    },
+    "formula_reference_count": {"type": "integer", "minimum": 0},
+    "formula_record_count": {"type": "integer", "minimum": 0},
+    "gold_preparer_id": {"type": "string", "minLength": 1},
+    "gold_verifier_id": {"type": "string", "minLength": 1},
+    "review_mode": {
+      "type": "string",
+      "enum": ["independent", "single_reviewer_delayed"]
+    },
+    "review_status": {
+      "type": "string",
+      "enum": ["pending", "approved", "needs_adjudication", "rejected"]
+    },
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "review_notes": {"type": ["string", "null"], "minLength": 1},
+    "supersedes_page_qa_record_id": {"type": ["string", "null"], "minLength": 1},
+    "completed_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifactId": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "layout": {
+      "type": "string",
+      "enum": ["one_column", "two_column", "mixed", "other"]
+    },
+    "scanQuality": {
+      "type": "string",
+      "enum": ["born_digital", "clean_scan", "noisy_scan"]
+    },
+    "normalizedBoundingBox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x_min", "y_min", "x_max", "y_max"],
+      "properties": {
+        "x_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "y_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "x_max": {"type": "number", "minimum": 0, "maximum": 1},
+        "y_max": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "proseRegion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "region_id",
+        "bounding_box",
+        "expected_order",
+        "include_in_metrics",
+        "exclusion_reason"
+      ],
+      "properties": {
+        "region_id": {"type": "string", "minLength": 1},
+        "bounding_box": {"$ref": "#/$defs/normalizedBoundingBox"},
+        "expected_order": {"type": "integer", "minimum": 1},
+        "include_in_metrics": {"type": "boolean"},
+        "exclusion_reason": {"type": ["string", "null"], "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"include_in_metrics": {"const": true}},
+            "required": ["include_in_metrics"]
+          },
+          "then": {
+            "properties": {"exclusion_reason": {"type": "null"}}
+          },
+          "else": {
+            "properties": {"exclusion_reason": {"type": "string", "minLength": 1}}
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"extraction_outcome": {"const": "succeeded"}},
+        "required": ["extraction_outcome"]
+      },
+      "then": {
+        "properties": {
+          "error_code": {"type": "null"},
+          "error_detail": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "candidate_artifact_id": {"type": "null"},
+          "error_code": {"type": "string", "minLength": 1},
+          "error_detail": {"type": "string", "minLength": 1},
+          "cer": {"minimum": 1},
+          "wer": {"minimum": 1},
+          "reading_order_status": {"const": "critical_error"},
+          "reading_order_errors": {
+            "contains": {"const": "fragment_omission"},
+            "minContains": 1
+          },
+          "observed_block_order": {"maxItems": 0}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reading_order_status": {
+            "enum": ["noncritical_error", "critical_error"]
+          }
+        },
+        "required": ["reading_order_status"]
+      },
+      "then": {
+        "properties": {"reading_order_errors": {"minItems": 1}}
+      },
+      "else": {
+        "properties": {"reading_order_errors": {"maxItems": 0}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"formula_annotation_status": {"const": "not_selected"}},
+        "required": ["formula_annotation_status"]
+      },
+      "then": {
+        "properties": {
+          "formula_reference_count": {"const": 0},
+          "formula_record_count": {"const": 0}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"review_status": {"const": "approved"}},
+        "required": ["review_status"]
+      },
+      "then": {
+        "properties": {
+          "formula_annotation_status": {
+            "enum": ["completed", "not_selected"]
+          }
+        }
+      }
+    }
+  ]
+}

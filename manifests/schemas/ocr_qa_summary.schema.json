@@ -1,0 +1,519 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:ocr-qa-summary:v1",
+  "title": "Сводка запуска проверки OCR",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "summary_version",
+    "qa_run_id",
+    "run_manifest_path",
+    "run_manifest_sha256",
+    "page_results_path",
+    "page_results_sha256",
+    "formula_results_path",
+    "formula_results_sha256",
+    "sample_counts",
+    "variant_results",
+    "decision_status",
+    "recommendation",
+    "decision_reason",
+    "unresolved_issues",
+    "format_and_relation_checks",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "ocr-qa-summary-v1"},
+    "summary_version": {"type": "string", "minLength": 1},
+    "qa_run_id": {"type": "string", "minLength": 1},
+    "run_manifest_path": {"type": "string", "minLength": 1},
+    "run_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "page_results_path": {"type": "string", "minLength": 1},
+    "page_results_sha256": {"$ref": "#/$defs/sha256"},
+    "formula_results_path": {"type": ["string", "null"], "minLength": 1},
+    "formula_results_sha256": {
+      "anyOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
+    },
+    "sample_counts": {"$ref": "#/$defs/sampleCounts"},
+    "variant_results": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/variantResult"}
+    },
+    "decision_status": {
+      "type": "string",
+      "enum": ["pass", "revise", "quarantine", "insufficient"]
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["adopt_variant", "revise_and_repeat", "quarantine_groups", "stop"]
+    },
+    "decision_reason": {"type": "string", "minLength": 1},
+    "unresolved_issues": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "format_and_relation_checks": {
+      "type": "string",
+      "enum": ["pass", "fail", "not_run"]
+    },
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "layout": {
+      "type": "string",
+      "enum": ["one_column", "two_column", "mixed", "other"]
+    },
+    "sampleCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection_role",
+        "pdf_count",
+        "work_count",
+        "page_count",
+        "prose_characters",
+        "formula_occurrences",
+        "formula_work_ids",
+        "manual_challenge_page_count"
+      ],
+      "properties": {
+        "selection_role": {"const": "stratified_random"},
+        "pdf_count": {"type": "integer", "minimum": 1},
+        "work_count": {"type": "integer", "minimum": 1},
+        "page_count": {"type": "integer", "minimum": 1},
+        "prose_characters": {"type": "integer", "minimum": 1},
+        "formula_occurrences": {"type": "integer", "minimum": 0},
+        "formula_work_ids": {"type": "integer", "minimum": 0},
+        "manual_challenge_page_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "metricAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection_role",
+        "work_count",
+        "page_count",
+        "attempted_pages",
+        "successful_extraction_pages",
+        "extraction_success_rate",
+        "prose_characters",
+        "character_errors",
+        "cer",
+        "cer_ci_upper",
+        "reference_words",
+        "word_errors",
+        "wer",
+        "wer_ci_upper",
+        "critical_reading_order_pages",
+        "critical_reading_order_rate",
+        "critical_reading_order_rate_ci_upper",
+        "formula_reference_count",
+        "formula_work_count",
+        "formula_true_positives",
+        "formula_false_negatives",
+        "formula_false_positives",
+        "formula_detection_f1",
+        "formula_detection_f1_ci_lower",
+        "critical_formula_damage_count",
+        "critical_formula_damage_rate",
+        "critical_formula_damage_rate_ci_upper",
+        "prose_criteria_status",
+        "formula_criteria_status"
+      ],
+      "properties": {
+        "selection_role": {
+          "type": "string",
+          "enum": ["stratified_random", "manual_challenge"]
+        },
+        "group_id": {"type": "string", "minLength": 1},
+        "source_id": {"type": "string", "minLength": 1},
+        "source_group_id": {"type": "string", "minLength": 1},
+        "layout": {"$ref": "#/$defs/layout"},
+        "work_count": {"type": "integer", "minimum": 1},
+        "page_count": {"type": "integer", "minimum": 1},
+        "attempted_pages": {"type": "integer", "minimum": 1},
+        "successful_extraction_pages": {"type": "integer", "minimum": 0},
+        "extraction_success_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "prose_characters": {"type": "integer", "minimum": 1},
+        "character_errors": {"type": "integer", "minimum": 0},
+        "cer": {"type": "number", "minimum": 0},
+        "cer_ci_upper": {"type": "number", "minimum": 0},
+        "reference_words": {"type": "integer", "minimum": 1},
+        "word_errors": {"type": "integer", "minimum": 0},
+        "wer": {"type": "number", "minimum": 0},
+        "wer_ci_upper": {"type": "number", "minimum": 0},
+        "critical_reading_order_pages": {"type": "integer", "minimum": 0},
+        "critical_reading_order_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "critical_reading_order_rate_ci_upper": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "formula_reference_count": {"type": "integer", "minimum": 0},
+        "formula_work_count": {"type": "integer", "minimum": 0},
+        "formula_true_positives": {"type": "integer", "minimum": 0},
+        "formula_false_negatives": {"type": "integer", "minimum": 0},
+        "formula_false_positives": {"type": "integer", "minimum": 0},
+        "formula_detection_f1": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "formula_detection_f1_ci_lower": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "critical_formula_damage_count": {"type": "integer", "minimum": 0},
+        "critical_formula_damage_rate": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "critical_formula_damage_rate_ci_upper": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "prose_criteria_status": {
+          "type": "string",
+          "enum": ["pass", "fail", "insufficient"]
+        },
+        "formula_criteria_status": {
+          "type": "string",
+          "enum": ["pass", "fail", "insufficient", "not_evaluated"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"prose_criteria_status": {"const": "pass"}},
+            "required": ["prose_criteria_status"]
+          },
+          "then": {
+            "properties": {
+              "cer_ci_upper": {"maximum": 0.03},
+              "wer_ci_upper": {"maximum": 0.1},
+              "critical_reading_order_rate_ci_upper": {"maximum": 0.05}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"formula_criteria_status": {"const": "pass"}},
+            "required": ["formula_criteria_status"]
+          },
+          "then": {
+            "properties": {
+              "formula_reference_count": {"minimum": 200},
+              "formula_work_count": {"minimum": 30},
+              "formula_detection_f1_ci_lower": {"type": "number", "minimum": 0.9},
+              "critical_formula_damage_rate_ci_upper": {
+                "type": "number",
+                "maximum": 0.05
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"formula_reference_count": {"const": 0}},
+            "required": ["formula_reference_count"]
+          },
+          "then": {
+            "properties": {
+              "formula_work_count": {"const": 0},
+              "formula_true_positives": {"const": 0},
+              "formula_false_negatives": {"const": 0},
+              "critical_formula_damage_count": {"const": 0},
+              "critical_formula_damage_rate": {"type": "null"},
+              "critical_formula_damage_rate_ci_upper": {"type": "null"},
+              "formula_criteria_status": {
+                "enum": ["insufficient", "not_evaluated"]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {"formula_false_positives": {"const": 0}},
+                  "required": ["formula_false_positives"]
+                },
+                "then": {
+                  "properties": {
+                    "formula_detection_f1": {"type": "null"},
+                    "formula_detection_f1_ci_lower": {"type": "null"}
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "formula_detection_f1": {"const": 0},
+                    "formula_detection_f1_ci_lower": {"const": 0}
+                  }
+                }
+              }
+            ]
+          },
+          "else": {
+            "properties": {
+              "formula_work_count": {"minimum": 1},
+              "formula_detection_f1": {"type": "number", "minimum": 0, "maximum": 1},
+              "formula_detection_f1_ci_lower": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "critical_formula_damage_rate": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "critical_formula_damage_rate_ci_upper": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "formula_criteria_status": {
+                "enum": ["pass", "fail", "insufficient"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "probabilityOverall": {
+      "allOf": [
+        {"$ref": "#/$defs/metricAggregate"},
+        {
+          "properties": {
+            "selection_role": {"const": "stratified_random"}
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {"prose_criteria_status": {"const": "pass"}},
+                "required": ["prose_criteria_status"]
+              },
+              "then": {
+                "properties": {
+                  "page_count": {"minimum": 100},
+                  "prose_characters": {"minimum": 20000}
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "sourceLayoutGroup": {
+      "allOf": [
+        {"$ref": "#/$defs/metricAggregate"},
+        {
+          "required": ["group_id", "source_id", "layout"],
+          "properties": {
+            "selection_role": {"const": "stratified_random"}
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {"prose_criteria_status": {"const": "pass"}},
+                "required": ["prose_criteria_status"]
+              },
+              "then": {
+                "properties": {
+                  "page_count": {"minimum": 10},
+                  "prose_characters": {"minimum": 2000}
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "manualChallengeAggregate": {
+      "allOf": [
+        {"$ref": "#/$defs/metricAggregate"},
+        {
+          "required": ["group_id"],
+          "properties": {
+            "selection_role": {"const": "manual_challenge"}
+          }
+        }
+      ]
+    },
+    "variantResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variant_id",
+        "overall",
+        "source_layout_groups",
+        "manual_challenge_results",
+        "meets_core_criteria",
+        "h3_allowed",
+        "selected_for_adoption"
+      ],
+      "properties": {
+        "variant_id": {"type": "string", "minLength": 1},
+        "overall": {"$ref": "#/$defs/probabilityOverall"},
+        "source_layout_groups": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/sourceLayoutGroup"}
+        },
+        "manual_challenge_results": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/manualChallengeAggregate"}
+        },
+        "meets_core_criteria": {"type": "boolean"},
+        "h3_allowed": {"type": "boolean"},
+        "selected_for_adoption": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"meets_core_criteria": {"const": true}},
+            "required": ["meets_core_criteria"]
+          },
+          "then": {
+            "properties": {
+              "overall": {
+                "properties": {"prose_criteria_status": {"const": "pass"}}
+              },
+              "source_layout_groups": {
+                "items": {
+                  "properties": {"prose_criteria_status": {"const": "pass"}},
+                  "required": ["prose_criteria_status"]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"h3_allowed": {"const": true}},
+            "required": ["h3_allowed"]
+          },
+          "then": {
+            "properties": {
+              "meets_core_criteria": {"const": true},
+              "overall": {
+                "properties": {
+                  "formula_criteria_status": {"const": "pass"},
+                  "formula_reference_count": {"minimum": 200},
+                  "formula_work_count": {"minimum": 30}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"selected_for_adoption": {"const": true}},
+            "required": ["selected_for_adoption"]
+          },
+          "then": {
+            "properties": {"meets_core_criteria": {"const": true}}
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"formula_results_path": {"type": "null"}},
+        "required": ["formula_results_path"]
+      },
+      "then": {
+        "properties": {"formula_results_sha256": {"type": "null"}}
+      },
+      "else": {
+        "properties": {"formula_results_sha256": {"$ref": "#/$defs/sha256"}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"decision_status": {"const": "pass"}},
+        "required": ["decision_status"]
+      },
+      "then": {
+        "properties": {"recommendation": {"const": "adopt_variant"}}
+      },
+      "else": {
+        "properties": {"recommendation": {"not": {"const": "adopt_variant"}}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"recommendation": {"const": "adopt_variant"}},
+        "required": ["recommendation"]
+      },
+      "then": {
+        "properties": {
+          "variant_results": {
+            "contains": {
+              "properties": {"selected_for_adoption": {"const": true}},
+              "required": ["selected_for_adoption"]
+            },
+            "minContains": 1,
+            "maxContains": 1
+          },
+          "format_and_relation_checks": {"const": "pass"}
+        }
+      },
+      "else": {
+        "properties": {
+          "variant_results": {
+            "items": {
+              "properties": {"selected_for_adoption": {"const": false}},
+              "required": ["selected_for_adoption"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "variant_results": {
+            "contains": {
+              "properties": {"h3_allowed": {"const": true}},
+              "required": ["h3_allowed"]
+            }
+          }
+        },
+        "required": ["variant_results"]
+      },
+      "then": {
+        "properties": {
+          "sample_counts": {
+            "properties": {
+              "formula_occurrences": {"minimum": 200},
+              "formula_work_ids": {"minimum": 30}
+            }
+          },
+          "formula_results_path": {"type": "string", "minLength": 1},
+          "formula_results_sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    }
+  ]
+}

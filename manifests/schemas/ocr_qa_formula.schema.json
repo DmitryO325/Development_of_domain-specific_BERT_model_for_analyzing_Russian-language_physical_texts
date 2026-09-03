@@ -1,0 +1,327 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:ocr-qa-formula:v1",
+  "title": "Результат проверки одного вхождения формулы",
+  "description": "Одна запись описывает сопоставленное эталонное вхождение, пропуск или лишнее предсказание.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "formula_qa_record_id",
+    "qa_run_id",
+    "page_sample_id",
+    "variant_id",
+    "work_id",
+    "source_id",
+    "source_group_id",
+    "source_pdf_artifact_id",
+    "publication_year",
+    "selection_role",
+    "page_index",
+    "page_number",
+    "page_render_path",
+    "page_render_sha256",
+    "page_render_dpi",
+    "coordinate_space",
+    "candidate_page_text_path",
+    "candidate_page_text_sha256",
+    "match_status",
+    "reference_formula_id",
+    "prediction_formula_id",
+    "formula_kind",
+    "reference_presence_in_candidate",
+    "reference_bounding_box",
+    "reference_span",
+    "prediction_span",
+    "intersection_over_union",
+    "reference_formula_sha256",
+    "damage_status",
+    "critical_damage",
+    "damage_types",
+    "review_status",
+    "reviewer_id",
+    "review_notes",
+    "supersedes_formula_qa_record_id",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "ocr-qa-formula-v1"},
+    "formula_qa_record_id": {"type": "string", "minLength": 1},
+    "qa_run_id": {"type": "string", "minLength": 1},
+    "page_sample_id": {"type": "string", "minLength": 1},
+    "variant_id": {"type": "string", "minLength": 1},
+    "work_id": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "source_group_id": {"type": "string", "minLength": 1},
+    "source_pdf_artifact_id": {"$ref": "#/$defs/artifactId"},
+    "publication_year": {"type": "integer", "minimum": 1, "maximum": 9999},
+    "selection_role": {
+      "type": "string",
+      "enum": ["stratified_random", "manual_challenge"]
+    },
+    "page_index": {"type": "integer", "minimum": 0},
+    "page_number": {"type": "integer", "minimum": 1},
+    "page_render_path": {"type": "string", "minLength": 1},
+    "page_render_sha256": {"$ref": "#/$defs/sha256"},
+    "page_render_dpi": {"type": "integer", "minimum": 72},
+    "coordinate_space": {
+      "type": "string",
+      "const": "candidate_page_text_unicode_code_points_v1"
+    },
+    "candidate_page_text_path": {"type": "string", "minLength": 1},
+    "candidate_page_text_sha256": {"$ref": "#/$defs/sha256"},
+    "match_status": {
+      "type": "string",
+      "enum": ["true_positive", "false_negative", "false_positive"]
+    },
+    "reference_formula_id": {"type": ["string", "null"], "minLength": 1},
+    "prediction_formula_id": {"type": ["string", "null"], "minLength": 1},
+    "formula_kind": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": ["inline", "display", "multiline", "other"]
+        },
+        {"type": "null"}
+      ]
+    },
+    "reference_presence_in_candidate": {
+      "type": "string",
+      "enum": ["present", "partial", "absent", "not_applicable"]
+    },
+    "reference_bounding_box": {
+      "anyOf": [
+        {"$ref": "#/$defs/normalizedBoundingBox"},
+        {"type": "null"}
+      ]
+    },
+    "reference_span": {
+      "anyOf": [
+        {"$ref": "#/$defs/span"},
+        {"type": "null"}
+      ]
+    },
+    "prediction_span": {
+      "anyOf": [
+        {"$ref": "#/$defs/span"},
+        {"type": "null"}
+      ]
+    },
+    "intersection_over_union": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reference_formula_sha256": {
+      "anyOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
+    },
+    "damage_status": {
+      "type": "string",
+      "enum": ["intact", "noncritical", "critical", "not_applicable"]
+    },
+    "critical_damage": {"type": "boolean"},
+    "damage_types": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "missing_formula",
+          "symbol_substitution",
+          "structure_loss",
+          "superscript_or_subscript_loss",
+          "fraction_loss",
+          "delimiter_loss",
+          "matrix_loss",
+          "formula_reading_order",
+          "other"
+        ]
+      }
+    },
+    "review_status": {
+      "type": "string",
+      "enum": ["pending", "approved", "needs_adjudication", "rejected"]
+    },
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "review_notes": {"type": ["string", "null"], "minLength": 1},
+    "supersedes_formula_qa_record_id": {"type": ["string", "null"], "minLength": 1},
+    "completed_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifactId": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 1}
+      }
+    },
+    "normalizedBoundingBox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x_min", "y_min", "x_max", "y_max"],
+      "properties": {
+        "x_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "y_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "x_max": {"type": "number", "minimum": 0, "maximum": 1},
+        "y_max": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"match_status": {"const": "true_positive"}},
+        "required": ["match_status"]
+      },
+      "then": {
+        "properties": {
+          "reference_formula_id": {"type": "string", "minLength": 1},
+          "prediction_formula_id": {"type": "string", "minLength": 1},
+          "formula_kind": {
+            "type": "string",
+            "enum": ["inline", "display", "multiline", "other"]
+          },
+          "reference_presence_in_candidate": {
+            "enum": ["present", "partial"]
+          },
+          "reference_bounding_box": {"$ref": "#/$defs/normalizedBoundingBox"},
+          "reference_span": {"$ref": "#/$defs/span"},
+          "prediction_span": {"$ref": "#/$defs/span"},
+          "intersection_over_union": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 1
+          },
+          "reference_formula_sha256": {"$ref": "#/$defs/sha256"},
+          "damage_status": {
+            "type": "string",
+            "enum": ["intact", "noncritical", "critical"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"match_status": {"const": "false_negative"}},
+        "required": ["match_status"]
+      },
+      "then": {
+        "properties": {
+          "reference_formula_id": {"type": "string", "minLength": 1},
+          "prediction_formula_id": {"type": "null"},
+          "formula_kind": {
+            "type": "string",
+            "enum": ["inline", "display", "multiline", "other"]
+          },
+          "reference_presence_in_candidate": {
+            "enum": ["present", "partial", "absent"]
+          },
+          "reference_bounding_box": {"$ref": "#/$defs/normalizedBoundingBox"},
+          "prediction_span": {"type": "null"},
+          "intersection_over_union": {"type": "null"},
+          "reference_formula_sha256": {"$ref": "#/$defs/sha256"},
+          "damage_status": {
+            "type": "string",
+            "enum": ["intact", "noncritical", "critical"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"match_status": {"const": "false_positive"}},
+        "required": ["match_status"]
+      },
+      "then": {
+        "properties": {
+          "reference_formula_id": {"type": "null"},
+          "prediction_formula_id": {"type": "string", "minLength": 1},
+          "formula_kind": {"type": "null"},
+          "reference_presence_in_candidate": {"const": "not_applicable"},
+          "reference_bounding_box": {"type": "null"},
+          "reference_span": {"type": "null"},
+          "prediction_span": {"$ref": "#/$defs/span"},
+          "intersection_over_union": {"type": "null"},
+          "reference_formula_sha256": {"type": "null"},
+          "damage_status": {"const": "not_applicable"},
+          "critical_damage": {"const": false},
+          "damage_types": {"maxItems": 0}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "match_status": {"const": "false_negative"},
+          "reference_presence_in_candidate": {"const": "absent"}
+        },
+        "required": ["match_status", "reference_presence_in_candidate"]
+      },
+      "then": {
+        "properties": {
+          "reference_span": {"type": "null"},
+          "damage_status": {"const": "critical"},
+          "critical_damage": {"const": true},
+          "damage_types": {
+            "contains": {"const": "missing_formula"},
+            "minContains": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "match_status": {"const": "false_negative"},
+          "reference_presence_in_candidate": {"enum": ["present", "partial"]}
+        },
+        "required": ["match_status", "reference_presence_in_candidate"]
+      },
+      "then": {
+        "properties": {"reference_span": {"$ref": "#/$defs/span"}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"damage_status": {"const": "critical"}},
+        "required": ["damage_status"]
+      },
+      "then": {
+        "properties": {
+          "critical_damage": {"const": true},
+          "damage_types": {"minItems": 1}
+        }
+      },
+      "else": {
+        "properties": {"critical_damage": {"const": false}}
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "damage_status": {"enum": ["intact", "not_applicable"]}
+        },
+        "required": ["damage_status"]
+      },
+      "then": {
+        "properties": {"damage_types": {"maxItems": 0}}
+      },
+      "else": {
+        "properties": {"damage_types": {"minItems": 1}}
+      }
+    }
+  ]
+}

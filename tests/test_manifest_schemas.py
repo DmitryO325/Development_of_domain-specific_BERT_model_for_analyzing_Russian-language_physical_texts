@@ -77,6 +77,12 @@ class ManifestSchemaTests(unittest.TestCase):
             "h2_calibration_plan.example.json": "h2_calibration_plan.schema.json",
             "h2_calibration_summary.example.json": "h2_calibration_summary.schema.json",
             "h2_grnti_excerpt.example.json": "h2_grnti_excerpt.schema.json",
+            "ocr_qa_formula.example.jsonl": "ocr_qa_formula.schema.json",
+            "ocr_qa_frame.example.jsonl": "ocr_qa_frame.schema.json",
+            "ocr_qa_page.example.jsonl": "ocr_qa_page.schema.json",
+            "ocr_qa_run.example.json": "ocr_qa_run.schema.json",
+            "ocr_qa_summary.example.json": "ocr_qa_summary.schema.json",
+            "pdf_page_export.example.jsonl": "pdf_page_export.schema.json",
         }
         schema_dir = PROJECT_ROOT / "manifests" / "schemas"
         template_dir = PROJECT_ROOT / "manifests" / "templates"
@@ -133,6 +139,61 @@ class ManifestSchemaTests(unittest.TestCase):
             "frozen_manifest",
             json.loads(frozen_path.read_text(encoding="utf-8")),
         )
+
+    def test_ocr_summary_uses_zero_f1_for_false_positive_only(self) -> None:
+        """Одни ложные формулы должны иметь нулевой, а не пустой F1."""
+
+        schema_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "schemas"
+            / "ocr_qa_summary.schema.json"
+        )
+        example_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "templates"
+            / "ocr_qa_summary.example.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        summary = json.loads(example_path.read_text(encoding="utf-8"))
+
+        summary["sample_counts"]["formula_occurrences"] = 0
+        summary["sample_counts"]["formula_work_ids"] = 0
+
+        for variant_result in summary["variant_results"]:
+            aggregates = [
+                variant_result["overall"],
+                *variant_result["source_layout_groups"],
+            ]
+
+            for aggregate in aggregates:
+                aggregate.update(
+                    {
+                        "formula_reference_count": 0,
+                        "formula_work_count": 0,
+                        "formula_true_positives": 0,
+                        "formula_false_negatives": 0,
+                        "formula_false_positives": 1,
+                        "formula_detection_f1": 0,
+                        "formula_detection_f1_ci_lower": 0,
+                        "critical_formula_damage_count": 0,
+                        "critical_formula_damage_rate": None,
+                        "critical_formula_damage_rate_ci_upper": None,
+                        "formula_criteria_status": "insufficient",
+                    }
+                )
+
+        validator = Draft202012Validator(
+            schema,
+            format_checker=FormatChecker(),
+        )
+        errors = list(validator.iter_errors(summary))
+        self.assertEqual(errors, [])
+
+        summary["variant_results"][0]["overall"]["formula_detection_f1"] = None
+        errors = list(validator.iter_errors(summary))
+        self.assertTrue(errors)
 
     def test_metadata_only_retrieval_cannot_invent_http_response(self) -> None:
         """Событие без снимка ответа не должно содержать фиктивные HTTP-поля."""

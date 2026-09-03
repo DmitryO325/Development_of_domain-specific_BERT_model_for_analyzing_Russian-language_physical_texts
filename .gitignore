@@ -227,6 +227,9 @@ data/qa/**
 !data/extracted/.gitkeep
 !data/processed/.gitkeep
 
+# Локальные паспорта и результаты ручной проверки OCR
+manifests/ocr_qa/
+
 # Локальные черновики и блокноты
 /draft/
 

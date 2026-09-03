@@ -12,6 +12,7 @@ from .local_registration import (
     read_local_file_registrations,
 )
 from .manifests import ManifestConcurrencyError, ManifestPlan, ManifestStore
+from .ocr_qa_validation import OcrQaValidationReport, OcrQaValidator
 from .profiles import SourceProfile, get_source_profile
 from .registration import (
     RegistrationOptions,
@@ -25,6 +26,8 @@ __all__ = [
     "LocalFileRegistration",
     "ManifestPlan",
     "ManifestStore",
+    "OcrQaValidationReport",
+    "OcrQaValidator",
     "RegistrationOptions",
     "SourceProfile",
     "WorkIdentity",
