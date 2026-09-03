@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import unittest
 
 from pathlib import Path
 from typing import Any
 
-from src.corpus.local_registration import LocalFileRegistration, plan_local_file
+from src.corpus.local_registration import (
+    LocalFileRegistration,
+    plan_local_file,
+    read_local_file_registrations,
+)
 from src.corpus.manifests import ManifestPlan, ManifestStore, sha256_bytes
 from src.corpus.profiles import get_source_profile
 from src.corpus.registration import RegistrationOptions
@@ -210,12 +215,14 @@ class LocalFileRegistrationTests(unittest.TestCase):
                 project_root=self.project_root,
             )
 
-    def test_rejects_invalid_url_timestamp_and_doi(self) -> None:
-        """Некорректные URL, время и DOI должны отклоняться до сборки плана."""
+    def test_rejects_invalid_url_dates_and_doi(self) -> None:
+        """Некорректные URL, даты и DOI должны отклоняться до сборки плана."""
 
         invalid_changes = (
             ({"source_url": "file:///tmp/article.pdf"}, "source_url"),
             ({"retrieved_at": "2024-01-10T12:30:00"}, "часовой пояс"),
+            ({"published_at": "2024-02-30"}, "published_at"),
+            ({"published_at": "20240110"}, "published_at"),
             ({"doi": "not-a-doi"}, "doi"),
         )
 
@@ -228,6 +235,61 @@ class LocalFileRegistrationTests(unittest.TestCase):
                         self.options,
                         project_root=self.project_root,
                     )
+
+    def test_eligible_accepts_dates_outside_previous_period(self) -> None:
+        """Допуск работы не должен зависеть от прежнего диапазона годов."""
+
+        for published_at in ("1918-01-01", "2026-09-02"):
+            with self.subTest(published_at=published_at):
+                plan = plan_local_file(
+                    self.registration(
+                        eligibility_status="eligible",
+                        published_at=published_at,
+                    ),
+                    self.profile,
+                    self.options,
+                    project_root=self.project_root,
+                )
+
+                self.assertEqual(plan.works[0]["eligibility_status"], "eligible")
+                self.assertEqual(plan.works[0]["published_at"], published_at)
+
+    def test_eligible_requires_publication_date(self) -> None:
+        """Допущенная работа должна иметь точную дату публикации."""
+
+        with self.assertRaisesRegex(ValueError, "published_at"):
+            plan_local_file(
+                self.registration(
+                    eligibility_status="eligible",
+                    published_at=None,
+                ),
+                self.profile,
+                self.options,
+                project_root=self.project_root,
+            )
+
+    def test_reads_registration_jsonl_and_rejects_duplicate_keys(self) -> None:
+        """Общий загрузчик должен читать карточки и отклонять повторные ключи."""
+
+        input_path = self.project_root / "manifests" / "imports" / "manual.jsonl"
+        input_path.parent.mkdir(parents=True)
+        record = self.registration().__dict__
+        input_path.write_text(
+            json.dumps(record, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        registrations = read_local_file_registrations(input_path)
+
+        self.assertEqual(registrations, [self.registration()])
+
+        input_path.write_text(
+            '{"relative_path":"a","relative_path":"b"}\n',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "повторный ключ"):
+            read_local_file_registrations(input_path)
 
 
 if __name__ == "__main__":

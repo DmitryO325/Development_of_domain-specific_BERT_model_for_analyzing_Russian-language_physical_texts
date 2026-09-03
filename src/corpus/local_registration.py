@@ -474,10 +474,8 @@ def _normalize_eligibility(
         if genre == "other":
             raise ValueError("Для eligible-работы нужен научный genre")
 
-        if published_at is None or not 2000 <= int(published_at[:4]) <= 2025:
-            raise ValueError(
-                "eligible-работа должна иметь published_at за 2000–2025 год"
-            )
+        if published_at is None:
+            raise ValueError("eligible-работа должна иметь published_at")
 
     return normalized_status, None
 

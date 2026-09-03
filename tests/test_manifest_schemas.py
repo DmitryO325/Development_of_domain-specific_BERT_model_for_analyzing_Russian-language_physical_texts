@@ -242,6 +242,29 @@ class ManifestSchemaTests(unittest.TestCase):
         with self.assertRaises(SchemaValidationError):
             self.catalog.validate("works", record)
 
+    def test_eligible_work_accepts_dates_outside_previous_period(self) -> None:
+        """Схема не должна ограничивать работу прежним диапазоном годов."""
+
+        record = self._example("works")
+        record["eligibility_status"] = "eligible"
+
+        for published_at in ("1918-01-01", "2026-09-02"):
+            with self.subTest(published_at=published_at):
+                record["published_at"] = published_at
+                self.catalog.validate("works", record)
+
+    def test_eligible_work_requires_valid_publication_date(self) -> None:
+        """Допущенная работа должна иметь корректную календарную дату."""
+
+        for published_at in (None, "2024-02-30"):
+            with self.subTest(published_at=published_at):
+                record = self._example("works")
+                record["eligibility_status"] = "eligible"
+                record["published_at"] = published_at
+
+                with self.assertRaises(SchemaValidationError):
+                    self.catalog.validate("works", record)
+
     def test_retrieved_artifact_requires_hash(self) -> None:
         """Полученный артефакт должен иметь идентификатор и SHA-256."""
 
