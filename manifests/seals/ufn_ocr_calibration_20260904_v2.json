@@ -1,0 +1,41 @@
+{
+  "created_at": "2026-09-04T12:00:00+03:00",
+  "implementation_files": [
+    {
+      "path": "src/collect/base.py",
+      "sha256": "ac6fd0ae69f764192a0629ab6eafe3980507bbc43469203eb32374ad929d7d72",
+      "snapshot_path": "manifests/ocr_qa/ufn_ocr_calibration_20260904_v2/implementation/src/collect/base.py"
+    },
+    {
+      "path": "src/collect/pdf_text.py",
+      "sha256": "01c06ffa695977b51a519be360b774ef4e2c2bd86a8fe69b8323030989601b07",
+      "snapshot_path": "manifests/ocr_qa/ufn_ocr_calibration_20260904_v2/implementation/src/collect/pdf_text.py"
+    },
+    {
+      "path": "src/corpus/manifests.py",
+      "sha256": "8ca47d354a6f4469050802cddd32476942fc362bc7cd2954b10d66f49fa9cadb",
+      "snapshot_path": "manifests/ocr_qa/ufn_ocr_calibration_20260904_v2/implementation/src/corpus/manifests.py"
+    },
+    {
+      "path": "src/corpus/schema_validation.py",
+      "sha256": "162dd437067b226f702d1af1c9866ded9d0d4f12fad5f5e1875916a5330b087c",
+      "snapshot_path": "manifests/ocr_qa/ufn_ocr_calibration_20260904_v2/implementation/src/corpus/schema_validation.py"
+    },
+    {
+      "path": "src/corpus/ocr_qa_preparation.py",
+      "sha256": "0e2b58eb7d7248774d23020ab3c754a5c59e6e352bf58e97e0a92fe114d66bf0",
+      "snapshot_path": "manifests/ocr_qa/ufn_ocr_calibration_20260904_v2/implementation/src/corpus/ocr_qa_preparation.py"
+    },
+    {
+      "path": "scripts/prepare_ocr_qa.py",
+      "sha256": "643fdd0f184c8c4194d09939e48a703425bd350b8ce379d0e222f0f97ba63a12",
+      "snapshot_path": "manifests/ocr_qa/ufn_ocr_calibration_20260904_v2/implementation/scripts/prepare_ocr_qa.py"
+    }
+  ],
+  "page_plan_path": "manifests/ocr_qa/ufn_ocr_calibration_20260904_v2/page_plan.json",
+  "page_plan_sha256": "db9134bda0f69a72e13db49972429c2c361f80a6b005c2fb0e156ab44ac4abe5",
+  "qa_run_id": "ufn_ocr_calibration_20260904_v2",
+  "run_manifest_path": "manifests/ocr_qa/ufn_ocr_calibration_20260904_v2/ocr_qa_run.json",
+  "run_manifest_sha256": "15bfa39bdf7115f4aecd82cccf84d0553f26b0bc36ee0cffcaec11eb49498c13",
+  "schema_version": "ocr-qa-seal-v1"
+}

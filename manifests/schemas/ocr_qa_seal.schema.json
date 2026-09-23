@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:ocr-qa-seal:v1",
+  "title": "Внешняя печать паспорта запуска OCR QA",
+  "description": "Небольшая отслеживаемая запись фиксирует SHA-256 паспорта и точные снимки файлов реализации до ручной проверки.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "qa_run_id",
+    "run_manifest_path",
+    "run_manifest_sha256",
+    "page_plan_path",
+    "page_plan_sha256",
+    "implementation_files",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "ocr-qa-seal-v1"},
+    "qa_run_id": {"type": "string", "minLength": 1},
+    "run_manifest_path": {"$ref": "#/$defs/projectPath"},
+    "run_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "page_plan_path": {"$ref": "#/$defs/projectPath"},
+    "page_plan_sha256": {"$ref": "#/$defs/sha256"},
+    "implementation_files": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/implementationFile"}
+    },
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "projectPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "implementationFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "snapshot_path", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/projectPath"},
+        "snapshot_path": {"$ref": "#/$defs/projectPath"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

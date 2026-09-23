@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .ocr_qa_distance import calculate_ocr_metrics_from_files
 from .ocr_qa_io import (
     _OcrQaBundle,
     _OcrQaIoMixin,
@@ -379,7 +380,8 @@ class OcrQaValidator(_OcrQaIoMixin, _OcrQaSummaryMixin):
 
             if stratum is None:
                 errors.append(
-                    f"Страница выборки {sample_id!r} ссылается на неизвестную страту {stratum_id!r}."
+                    f"Страница выборки {sample_id!r} ссылается на "
+                    f"неизвестную страту {stratum_id!r}."
                 )
                 continue
 
@@ -612,7 +614,8 @@ class OcrQaValidator(_OcrQaIoMixin, _OcrQaSummaryMixin):
 
             if page is None:
                 errors.append(
-                    f"Для результата формулы {record_id!r} нет актуального одобренного результата страницы."
+                    f"Для результата формулы {record_id!r} нет актуального "
+                    "одобренного результата страницы."
                 )
                 continue
 
@@ -644,7 +647,8 @@ class OcrQaValidator(_OcrQaIoMixin, _OcrQaSummaryMixin):
             if isinstance(reference_id, str):
                 if reference_id in reference_ids[key]:
                     errors.append(
-                        f"Эталонная формула {reference_id!r} повторяется для ключа страницы {key!r}."
+                        f"Эталонная формула {reference_id!r} повторяется "
+                        f"для ключа страницы {key!r}."
                     )
 
                 reference_ids[key].add(reference_id)
@@ -652,7 +656,8 @@ class OcrQaValidator(_OcrQaIoMixin, _OcrQaSummaryMixin):
             if isinstance(prediction_id, str):
                 if prediction_id in prediction_ids[key]:
                     errors.append(
-                        f"Предсказанная формула {prediction_id!r} повторяется для ключа страницы {key!r}."
+                        f"Предсказанная формула {prediction_id!r} "
+                        f"повторяется для ключа страницы {key!r}."
                     )
 
                 prediction_ids[key].add(prediction_id)
@@ -716,11 +721,16 @@ class OcrQaValidator(_OcrQaIoMixin, _OcrQaSummaryMixin):
             record_id = page.get("page_qa_record_id")
             self._check_page_metric(page, "character", "cer", errors)
             self._check_page_metric(page, "word", "wer", errors)
+
+            if self.check_files:
+                self._check_page_text_metrics(page, errors)
+
             self._check_regions(page, errors)
 
             if page.get("page_number") != page.get("page_index", -1) + 1:
                 errors.append(
-                    f"Результат страницы {record_id!r}: page_number должен равняться page_index + 1."
+                    f"Результат страницы {record_id!r}: page_number должен "
+                    "равняться page_index + 1."
                 )
 
             if page.get("extraction_outcome") == "failed":
@@ -795,6 +805,92 @@ class OcrQaValidator(_OcrQaIoMixin, _OcrQaSummaryMixin):
             f"Результат страницы {record_id!r}, {metric_name}",
             errors,
         )
+
+    def _check_page_text_metrics(
+        self,
+        page: dict[str, Any],
+        errors: list[str],
+    ) -> None:
+        """Пересчитать все счётчики непосредственно из двух файлов прозы."""
+
+        record_id = page.get("page_qa_record_id")
+        reference_path = self._metric_text_path(
+            page.get("gold_prose_text_path"),
+            label=f"эталон результата страницы {record_id!r}",
+            errors=errors,
+        )
+        candidate_path = self._metric_text_path(
+            page.get("candidate_prose_text_path"),
+            label=f"кандидат прозы результата страницы {record_id!r}",
+            errors=errors,
+        )
+
+        if reference_path is None or candidate_path is None:
+            return
+
+        try:
+            metrics = calculate_ocr_metrics_from_files(
+                reference_path,
+                candidate_path,
+            )
+
+        except (OSError, TypeError, UnicodeDecodeError) as exception:
+            errors.append(
+                f"Не удалось пересчитать CER/WER страницы {record_id!r}: "
+                f"{exception}"
+            )
+            return
+
+        integer_checks = {
+            "reference_characters": metrics.characters.reference_length,
+            "character_substitutions": metrics.characters.substitutions,
+            "character_deletions": metrics.characters.deletions,
+            "character_insertions": metrics.characters.insertions,
+            "reference_words": metrics.words.reference_length,
+            "word_substitutions": metrics.words.substitutions,
+            "word_deletions": metrics.words.deletions,
+            "word_insertions": metrics.words.insertions,
+        }
+
+        for field_name, expected in integer_checks.items():
+            self._compare_integer(
+                expected,
+                page.get(field_name),
+                f"Результат страницы {record_id!r}, {field_name}",
+                errors,
+            )
+
+        self._compare_float(
+            metrics.cer,
+            page.get("cer"),
+            f"Результат страницы {record_id!r}, cer из файлов",
+            errors,
+        )
+        self._compare_float(
+            metrics.wer,
+            page.get("wer"),
+            f"Результат страницы {record_id!r}, wer из файлов",
+            errors,
+        )
+
+    def _metric_text_path(
+        self,
+        path_value: Any,
+        *,
+        label: str,
+        errors: list[str],
+    ) -> Path | None:
+        """Разрешить существующий путь текста для пересчёта метрик."""
+
+        if not isinstance(path_value, str):
+            return
+
+        path = self._resolve_embedded_path(path_value, label, errors)
+
+        if path is None or not path.is_file():
+            return
+
+        return path
 
     def _check_regions(
         self,

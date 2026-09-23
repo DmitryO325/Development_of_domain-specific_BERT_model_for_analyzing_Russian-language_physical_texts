@@ -1,0 +1,277 @@
+{
+  "schema_version": "ocr-qa-page-plan-v1",
+  "protocol_version": "ocr-qa-protocol-pre1",
+  "source_id": "S01_UFN_RU",
+  "source_group_id": "S01_UFN",
+  "publication_year": 2026,
+  "render_dpi": 200,
+  "minimum_prose_characters": 20000,
+  "pages": [
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268a.pdf",
+      "page_number": 1,
+      "printed_page_label": "787",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "first_pass": true,
+      "selection_tags": ["running_text", "first_page", "mixed_layout", "formula"],
+      "selection_reason": "Первая страница обзора: одноколоночная шапка, содержание и две колонки основного текста."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268a.pdf",
+      "page_number": 2,
+      "printed_page_label": "788",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "first_pass": true,
+      "selection_tags": ["running_text", "two_columns", "line_break_hyphenation"],
+      "selection_reason": "Обычная двухколоночная страница сплошной русской прозы и переносов слов."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268a.pdf",
+      "page_number": 20,
+      "printed_page_label": "806",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "first_pass": true,
+      "selection_tags": ["running_text", "two_columns", "formula", "table_or_figure"],
+      "selection_reason": "Две колонки с графиком, физическими обозначениями и подписью к рисунку."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268a.pdf",
+      "page_number": 40,
+      "printed_page_label": "826",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "bibliography", "non_russian_text"],
+      "selection_reason": "Переход от русской заключительной прозы к двухколоночной библиографии."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268b.pdf",
+      "page_number": 1,
+      "printed_page_label": "829",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "first_page", "mixed_layout", "formula"],
+      "selection_reason": "Первая страница обзора с длинной шапкой, авторскими сведениями и двумя колонками."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268b.pdf",
+      "page_number": 2,
+      "printed_page_label": "830",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "line_break_hyphenation"],
+      "selection_reason": "Обычная двухколоночная страница тела статьи."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268b.pdf",
+      "page_number": 7,
+      "printed_page_label": "835",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "formula", "table_or_figure"],
+      "selection_reason": "Двухколоночная страница с научной схемой, формулами и подписью к рисунку."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268b.pdf",
+      "page_number": 12,
+      "printed_page_label": "840",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "bibliography", "non_russian_text"],
+      "selection_reason": "Переход от русской прозы к двухколоночной библиографии с английскими ссылками."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268c.pdf",
+      "page_number": 1,
+      "printed_page_label": "842",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "first_page", "mixed_layout", "formula"],
+      "selection_reason": "Первая страница длинного обзора с одноколоночной шапкой и двухколоночным основным текстом."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268c.pdf",
+      "page_number": 2,
+      "printed_page_label": "843",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "formula", "line_break_hyphenation"],
+      "selection_reason": "Обычная двухколоночная страница с физическими обозначениями."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268c.pdf",
+      "page_number": 13,
+      "printed_page_label": "854",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "formula", "table_or_figure"],
+      "selection_reason": "Две колонки с графиками, формулами и подписями к рисункам."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268c.pdf",
+      "page_number": 23,
+      "printed_page_label": "864",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "bibliography", "non_russian_text"],
+      "selection_reason": "Заключительная русская проза в двух колонках и начало библиографии."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268d.pdf",
+      "page_number": 1,
+      "printed_page_label": "867",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "first_page", "mixed_layout", "formula"],
+      "selection_reason": "Первая страница статьи с шапкой, содержанием, двумя колонками и нумерованными формулами."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268d.pdf",
+      "page_number": 2,
+      "printed_page_label": "868",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "formula", "line_break_hyphenation"],
+      "selection_reason": "Двухколоночная проза с формулами и переносами слов."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268d.pdf",
+      "page_number": 5,
+      "printed_page_label": "871",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "formula", "table_or_figure"],
+      "selection_reason": "Страница с формулами, схемами и основным текстом в двух колонках."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268d.pdf",
+      "page_number": 8,
+      "printed_page_label": "874",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "mixed_layout", "formula", "table_or_figure"],
+      "selection_reason": "Крупные графики и подписи в верхней части, двухколоночная проза и формулы ниже."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268d.pdf",
+      "page_number": 9,
+      "printed_page_label": "875",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "first_pass": true,
+      "selection_tags": ["mixed_layout", "two_columns", "bibliography", "non_russian_text"],
+      "selection_reason": "Двухколоночная библиография сверху и английская аннотация внизу."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268e.pdf",
+      "page_number": 1,
+      "printed_page_label": "876",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "first_pass": true,
+      "selection_tags": ["running_text", "first_page", "mixed_layout", "table_or_figure", "bibliography"],
+      "selection_reason": "Одностраничный материал со сложной композицией фотографий, прозы и ссылок."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268f.pdf",
+      "page_number": 1,
+      "printed_page_label": "877",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "first_page", "mixed_layout", "formula"],
+      "selection_reason": "Первая страница обзора с длинной одноколоночной шапкой и двумя колонками основного текста."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268f.pdf",
+      "page_number": 2,
+      "printed_page_label": "878",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "formula", "line_break_hyphenation"],
+      "selection_reason": "Обычная двухколоночная страница научного обзора."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268f.pdf",
+      "page_number": 8,
+      "printed_page_label": "884",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "formula", "table_or_figure"],
+      "selection_reason": "Двухколоночная страница с графиками, табличными данными и физическими обозначениями."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268f.pdf",
+      "page_number": 14,
+      "printed_page_label": "890",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["two_columns", "bibliography", "non_russian_text"],
+      "selection_reason": "Конец статьи с двухколоночной библиографией и иноязычными ссылками."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268g.pdf",
+      "page_number": 1,
+      "printed_page_label": "892",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "first_page", "two_columns", "bibliography"],
+      "selection_reason": "Одностраничная научная заметка с двумя колонками и библиографией."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268h.pdf",
+      "page_number": 1,
+      "printed_page_label": "893",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "first_page", "mixed_layout", "table_or_figure"],
+      "selection_reason": "Первая страница мемориальной статьи: две колонки, крупная фотография и подпись."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268h.pdf",
+      "page_number": 2,
+      "printed_page_label": "894",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "bibliography"],
+      "selection_reason": "Окончание мемориальной статьи с основным текстом и библиографией."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268i.pdf",
+      "page_number": 1,
+      "printed_page_label": "895",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "first_page", "mixed_layout", "table_or_figure"],
+      "selection_reason": "Первая страница мемориальной статьи с фотографиями, подписями и двумя колонками."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268i.pdf",
+      "page_number": 2,
+      "printed_page_label": "896",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "bibliography"],
+      "selection_reason": "Вторая страница мемориальной статьи с двумя колонками и ссылками."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268j.pdf",
+      "page_number": 1,
+      "printed_page_label": "897",
+      "layout": "mixed",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "first_page", "two_columns", "bibliography"],
+      "selection_reason": "Первая страница библиографического обзора с двумя колонками и множеством смешанных обозначений."
+    },
+    {
+      "source_pdf_path": "data/raw/pdf/ufn_manual_20260831/r268j.pdf",
+      "page_number": 2,
+      "printed_page_label": "898",
+      "layout": "two_column",
+      "scan_quality": "born_digital",
+      "selection_tags": ["running_text", "two_columns", "bibliography", "line_break_hyphenation"],
+      "selection_reason": "Вторая страница обзора новых книг с двухколоночной прозой и URL."
+    }
+  ]
+}

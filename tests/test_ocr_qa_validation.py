@@ -51,6 +51,47 @@ class OcrQaValidatorTests(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertTrue(any("cer" in error and "0.01" in error for error in report.errors))
 
+    def test_recalculates_page_counts_from_prose_files(self) -> None:
+        """Валидатор должен получать S, D и I из файлов, а не доверять форме."""
+
+        gold_path = self.project_root / "gold.txt"
+        candidate_path = self.project_root / "candidate.txt"
+        gold_path.write_text("кот", encoding="utf-8")
+        candidate_path.write_text("кит", encoding="utf-8")
+        page = copy.deepcopy(self.records["pages"][0])
+        page.update(
+            {
+                "gold_prose_text_path": "gold.txt",
+                "candidate_prose_text_path": "candidate.txt",
+                "reference_characters": 3,
+                "character_substitutions": 1,
+                "character_deletions": 0,
+                "character_insertions": 0,
+                "cer": 1 / 3,
+                "reference_words": 1,
+                "word_substitutions": 1,
+                "word_deletions": 0,
+                "word_insertions": 0,
+                "wer": 1.0,
+            }
+        )
+        validator = OcrQaValidator(
+            self.project_root,
+            schema_dir=ROOT / "manifests" / "schemas",
+            check_files=True,
+        )
+        errors: list[str] = []
+
+        validator._check_page_text_metrics(page, errors)
+
+        self.assertEqual(errors, [])
+
+        page["character_substitutions"] = 0
+        validator._check_page_text_metrics(page, errors)
+        self.assertTrue(
+            any("character_substitutions" in error for error in errors)
+        )
+
     def test_rejects_page_that_changes_frame_identity(self) -> None:
         """Страница не должна менять work_id из зафиксированной выборки."""
 
@@ -122,6 +163,75 @@ class OcrQaValidatorTests(unittest.TestCase):
         """Дополнительный сложный PDF не должен входить в target_pdf_count."""
 
         self._add_manual_challenge_page()
+        report = self._validate()
+        self.assertTrue(report.ok, "\n".join(report.errors))
+
+    def test_manual_challenge_only_summary_passes_validation(self) -> None:
+        """Ручной пилот проходит без вымышленных случайных агрегатов."""
+
+        run = self.records["run"]
+        selection_plan = run["selection_plan"]
+        selection_plan.update(
+            {
+                "method": "manual_challenge_only",
+                "target_pdf_count": 0,
+                "target_page_count": 0,
+                "target_manual_challenge_page_count": 1,
+                "strata": [],
+            }
+        )
+        self.records["frame"][0]["selection_role"] = "manual_challenge"
+
+        for page in self.records["pages"]:
+            page["selection_role"] = "manual_challenge"
+
+        for formula in self.records["formulas"]:
+            formula["selection_role"] = "manual_challenge"
+
+        summary = self.records["summary"]
+        summary["sample_counts"].update(
+            {
+                "pdf_count": 0,
+                "work_count": 0,
+                "page_count": 0,
+                "prose_characters": 0,
+                "formula_occurrences": 0,
+                "formula_work_ids": 0,
+                "manual_challenge_page_count": 1,
+            }
+        )
+
+        for variant_result in summary["variant_results"]:
+            variant_id = variant_result["variant_id"]
+            page = next(
+                item
+                for item in self.records["pages"]
+                if item["variant_id"] == variant_id
+            )
+            formulas = [
+                item
+                for item in self.records["formulas"]
+                if item["variant_id"] == variant_id
+            ]
+            manual_aggregate = self._aggregate(page, formulas)
+            manual_aggregate.update(
+                {
+                    "group_id": "manual_challenge_all",
+                    "source_id": page["source_id"],
+                    "layout": page["layout"],
+                }
+            )
+            variant_result.update(
+                {
+                    "overall": None,
+                    "source_layout_groups": [],
+                    "manual_challenge_results": [manual_aggregate],
+                    "meets_core_criteria": False,
+                    "h3_allowed": False,
+                    "selected_for_adoption": False,
+                }
+            )
+
         report = self._validate()
         self.assertTrue(report.ok, "\n".join(report.errors))
 

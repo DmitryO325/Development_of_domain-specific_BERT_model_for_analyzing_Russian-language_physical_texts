@@ -89,10 +89,10 @@
       ],
       "properties": {
         "selection_role": {"const": "stratified_random"},
-        "pdf_count": {"type": "integer", "minimum": 1},
-        "work_count": {"type": "integer", "minimum": 1},
-        "page_count": {"type": "integer", "minimum": 1},
-        "prose_characters": {"type": "integer", "minimum": 1},
+        "pdf_count": {"type": "integer", "minimum": 0},
+        "work_count": {"type": "integer", "minimum": 0},
+        "page_count": {"type": "integer", "minimum": 0},
+        "prose_characters": {"type": "integer", "minimum": 0},
         "formula_occurrences": {"type": "integer", "minimum": 0},
         "formula_work_ids": {"type": "integer", "minimum": 0},
         "manual_challenge_page_count": {"type": "integer", "minimum": 0}
@@ -370,10 +370,14 @@
       ],
       "properties": {
         "variant_id": {"type": "string", "minLength": 1},
-        "overall": {"$ref": "#/$defs/probabilityOverall"},
+        "overall": {
+          "anyOf": [
+            {"$ref": "#/$defs/probabilityOverall"},
+            {"type": "null"}
+          ]
+        },
         "source_layout_groups": {
           "type": "array",
-          "minItems": 1,
           "uniqueItems": true,
           "items": {"$ref": "#/$defs/sourceLayoutGroup"}
         },
@@ -437,6 +441,66 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sample_counts": {
+            "properties": {"page_count": {"const": 0}},
+            "required": ["page_count"]
+          }
+        },
+        "required": ["sample_counts"]
+      },
+      "then": {
+        "properties": {
+          "sample_counts": {
+            "properties": {
+              "pdf_count": {"const": 0},
+              "work_count": {"const": 0},
+              "page_count": {"const": 0},
+              "prose_characters": {"const": 0},
+              "formula_occurrences": {"const": 0},
+              "formula_work_ids": {"const": 0},
+              "manual_challenge_page_count": {"minimum": 1}
+            }
+          },
+          "variant_results": {
+            "items": {
+              "properties": {
+                "overall": {"type": "null"},
+                "source_layout_groups": {"maxItems": 0},
+                "manual_challenge_results": {"minItems": 1},
+                "meets_core_criteria": {"const": false},
+                "h3_allowed": {"const": false},
+                "selected_for_adoption": {"const": false}
+              }
+            }
+          },
+          "decision_status": {"const": "insufficient"},
+          "recommendation": {"not": {"const": "adopt_variant"}}
+        }
+      },
+      "else": {
+        "properties": {
+          "sample_counts": {
+            "properties": {
+              "pdf_count": {"minimum": 1},
+              "work_count": {"minimum": 1},
+              "page_count": {"minimum": 1},
+              "prose_characters": {"minimum": 1}
+            }
+          },
+          "variant_results": {
+            "items": {
+              "properties": {
+                "overall": {"$ref": "#/$defs/probabilityOverall"},
+                "source_layout_groups": {"minItems": 1}
+              }
+            }
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {"formula_results_path": {"type": "null"}},

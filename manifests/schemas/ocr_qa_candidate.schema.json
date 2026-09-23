@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:ocr-qa-candidate:v1",
+  "title": "Подготовленный текст одного варианта извлечения страницы",
+  "description": "Одна строка связывает выбранную страницу, вариант извлечения и неизменяемый файл полного текста страницы до ручной проверки.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_record_id",
+    "qa_run_id",
+    "page_sample_id",
+    "variant_id",
+    "work_id",
+    "source_id",
+    "source_group_id",
+    "source_pdf_artifact_id",
+    "candidate_artifact_id",
+    "page_index",
+    "page_number",
+    "extraction_outcome",
+    "error_code",
+    "error_detail",
+    "candidate_page_text_path",
+    "candidate_page_text_sha256",
+    "candidate_page_text_characters",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "ocr-qa-candidate-v1"},
+    "candidate_record_id": {"type": "string", "minLength": 1},
+    "qa_run_id": {"type": "string", "minLength": 1},
+    "page_sample_id": {"type": "string", "minLength": 1},
+    "variant_id": {"type": "string", "minLength": 1},
+    "work_id": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "source_group_id": {"type": "string", "minLength": 1},
+    "source_pdf_artifact_id": {"$ref": "#/$defs/artifactId"},
+    "candidate_artifact_id": {
+      "anyOf": [
+        {"$ref": "#/$defs/artifactId"},
+        {"type": "null"}
+      ]
+    },
+    "page_index": {"type": "integer", "minimum": 0},
+    "page_number": {"type": "integer", "minimum": 1},
+    "extraction_outcome": {
+      "type": "string",
+      "enum": ["succeeded", "failed"]
+    },
+    "error_code": {"type": ["string", "null"], "minLength": 1},
+    "error_detail": {"type": ["string", "null"], "minLength": 1},
+    "candidate_page_text_path": {"type": ["string", "null"], "minLength": 1},
+    "candidate_page_text_sha256": {
+      "anyOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
+    },
+    "candidate_page_text_characters": {"type": "integer", "minimum": 0},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifactId": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"extraction_outcome": {"const": "succeeded"}},
+        "required": ["extraction_outcome"]
+      },
+      "then": {
+        "properties": {
+          "candidate_artifact_id": {"$ref": "#/$defs/artifactId"},
+          "error_code": {"type": "null"},
+          "error_detail": {"type": "null"},
+          "candidate_page_text_path": {"type": "string", "minLength": 1},
+          "candidate_page_text_sha256": {"$ref": "#/$defs/sha256"}
+        }
+      },
+      "else": {
+        "properties": {
+          "candidate_artifact_id": {"type": "null"},
+          "error_code": {"type": "string", "minLength": 1},
+          "error_detail": {"type": "string", "minLength": 1},
+          "candidate_page_text_path": {"type": "null"},
+          "candidate_page_text_sha256": {"type": "null"},
+          "candidate_page_text_characters": {"const": 0}
+        }
+      }
+    }
+  ]
+}

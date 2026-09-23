@@ -77,6 +77,7 @@ class ManifestSchemaTests(unittest.TestCase):
             "h2_calibration_plan.example.json": "h2_calibration_plan.schema.json",
             "h2_calibration_summary.example.json": "h2_calibration_summary.schema.json",
             "h2_grnti_excerpt.example.json": "h2_grnti_excerpt.schema.json",
+            "ocr_qa_candidate.example.jsonl": "ocr_qa_candidate.schema.json",
             "ocr_qa_formula.example.jsonl": "ocr_qa_formula.schema.json",
             "ocr_qa_frame.example.jsonl": "ocr_qa_frame.schema.json",
             "ocr_qa_page.example.jsonl": "ocr_qa_page.schema.json",
@@ -105,6 +106,137 @@ class ManifestSchemaTests(unittest.TestCase):
                     key=lambda item: str(item.path),
                 )
                 self.assertEqual(errors, [], msg=f"{template_name}: {errors}")
+
+    def test_ocr_engineering_pilot_accepts_manual_challenge_only(self) -> None:
+        """Инженерный пилот может состоять только из стрессовых страниц."""
+
+        schema_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "schemas"
+            / "ocr_qa_run.schema.json"
+        )
+        example_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "templates"
+            / "ocr_qa_run.example.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        run = json.loads(example_path.read_text(encoding="utf-8"))
+        selection_plan = run["selection_plan"]
+
+        run["run_kind"] = "engineering_pilot"
+        selection_plan["method"] = "manual_challenge_only"
+        selection_plan["target_pdf_count"] = 0
+        selection_plan["target_page_count"] = 0
+        selection_plan["target_manual_challenge_page_count"] = 29
+        selection_plan["strata"] = []
+
+        validator = Draft202012Validator(
+            schema,
+            format_checker=FormatChecker(),
+        )
+        self.assertEqual(list(validator.iter_errors(run)), [])
+
+        invalid_run = copy.deepcopy(run)
+        invalid_run["selection_plan"]["target_manual_challenge_page_count"] = 0
+        self.assertTrue(list(validator.iter_errors(invalid_run)))
+
+        invalid_run = copy.deepcopy(run)
+        invalid_run["selection_plan"]["target_page_count"] = 1
+        self.assertTrue(list(validator.iter_errors(invalid_run)))
+
+        invalid_run = copy.deepcopy(run)
+        invalid_run["selection_plan"]["strata"] = [
+            copy.deepcopy(
+                json.loads(example_path.read_text(encoding="utf-8"))[
+                    "selection_plan"
+                ]["strata"][0]
+            )
+        ]
+        self.assertTrue(list(validator.iter_errors(invalid_run)))
+
+        invalid_run = copy.deepcopy(run)
+        invalid_run["run_kind"] = "corpus_gate"
+        self.assertTrue(list(validator.iter_errors(invalid_run)))
+
+        invalid_run = copy.deepcopy(run)
+        invalid_run["selection_plan"]["method"] = (
+            "stratified_random_with_manual_challenge_pages"
+        )
+        self.assertTrue(list(validator.iter_errors(invalid_run)))
+
+    def test_ocr_candidate_outcome_controls_text_and_error_fields(self) -> None:
+        """Исход извлечения должен соответствовать файлу текста и ошибке."""
+
+        schema_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "schemas"
+            / "ocr_qa_candidate.schema.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        validator = Draft202012Validator(
+            schema,
+            format_checker=FormatChecker(),
+        )
+
+        succeeded = self._example("ocr_qa_candidate")
+        failed = self._example("ocr_qa_candidate", index=1)
+        self.assertEqual(list(validator.iter_errors(succeeded)), [])
+        self.assertEqual(list(validator.iter_errors(failed)), [])
+
+        succeeded["error_code"] = "unexpected_error"
+        self.assertTrue(list(validator.iter_errors(succeeded)))
+
+        failed["candidate_page_text_path"] = "demo/partial.txt"
+        self.assertTrue(list(validator.iter_errors(failed)))
+
+    def test_ocr_run_candidate_manifest_fields_form_a_pair(self) -> None:
+        """Паспорт OCR ссылается на кандидаты только вместе с их хешем."""
+
+        schema_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "schemas"
+            / "ocr_qa_run.schema.json"
+        )
+        example_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "templates"
+            / "ocr_qa_run.example.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        run = json.loads(example_path.read_text(encoding="utf-8"))
+        validator = Draft202012Validator(
+            schema,
+            format_checker=FormatChecker(),
+        )
+
+        self.assertEqual(list(validator.iter_errors(run)), [])
+
+        run_without_candidates = copy.deepcopy(run)
+        del run_without_candidates["candidate_manifest_path"]
+        del run_without_candidates["candidate_manifest_sha256"]
+        self.assertEqual(list(validator.iter_errors(run_without_candidates)), [])
+
+        del run["candidate_manifest_sha256"]
+        self.assertTrue(list(validator.iter_errors(run)))
+
+    def test_ocr_page_plan_schema_is_valid(self) -> None:
+        """Схема плана страниц OCR должна соответствовать Draft 2020-12."""
+
+        schema_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "schemas"
+            / "ocr_qa_page_plan.schema.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+        Draft202012Validator.check_schema(schema)
 
     def test_dec013_examples_are_available_through_catalog(self) -> None:
         """Каталог должен проверять все новые журналы жизненного цикла."""
@@ -194,6 +326,146 @@ class ManifestSchemaTests(unittest.TestCase):
         summary["variant_results"][0]["overall"]["formula_detection_f1"] = None
         errors = list(validator.iter_errors(summary))
         self.assertTrue(errors)
+
+    def test_ocr_summary_accepts_manual_challenge_only_pilot(self) -> None:
+        """Сводка ручного инженерного пилота не имитирует случайную выборку."""
+
+        schema_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "schemas"
+            / "ocr_qa_summary.schema.json"
+        )
+        example_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "templates"
+            / "ocr_qa_summary.example.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        summary = json.loads(example_path.read_text(encoding="utf-8"))
+        summary["sample_counts"].update(
+            {
+                "pdf_count": 0,
+                "work_count": 0,
+                "page_count": 0,
+                "prose_characters": 0,
+                "formula_occurrences": 0,
+                "formula_work_ids": 0,
+                "manual_challenge_page_count": 29,
+            }
+        )
+
+        for variant_result in summary["variant_results"]:
+            manual_aggregate = copy.deepcopy(
+                variant_result["source_layout_groups"][0]
+            )
+            manual_aggregate["selection_role"] = "manual_challenge"
+            variant_result.update(
+                {
+                    "overall": None,
+                    "source_layout_groups": [],
+                    "manual_challenge_results": [manual_aggregate],
+                    "meets_core_criteria": False,
+                    "h3_allowed": False,
+                    "selected_for_adoption": False,
+                }
+            )
+
+        validator = Draft202012Validator(
+            schema,
+            format_checker=FormatChecker(),
+        )
+        self.assertEqual(list(validator.iter_errors(summary)), [])
+
+        for field_name in (
+            "pdf_count",
+            "work_count",
+            "page_count",
+            "prose_characters",
+            "formula_occurrences",
+            "formula_work_ids",
+        ):
+            with self.subTest(field_name=field_name):
+                invalid_summary = copy.deepcopy(summary)
+                invalid_summary["sample_counts"][field_name] = 1
+                self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        invalid_summary = copy.deepcopy(summary)
+        invalid_summary["sample_counts"]["manual_challenge_page_count"] = 0
+        self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        invalid_summary = copy.deepcopy(summary)
+        invalid_summary["variant_results"][0]["manual_challenge_results"] = []
+        self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        invalid_summary = copy.deepcopy(summary)
+        invalid_summary["variant_results"][0]["overall"] = copy.deepcopy(
+            summary["variant_results"][0]["manual_challenge_results"][0]
+        )
+        self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        invalid_summary = copy.deepcopy(summary)
+        invalid_summary["variant_results"][0]["source_layout_groups"] = copy.deepcopy(
+            summary["variant_results"][0]["manual_challenge_results"]
+        )
+        self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        for field_name in (
+            "meets_core_criteria",
+            "h3_allowed",
+            "selected_for_adoption",
+        ):
+            with self.subTest(field_name=field_name):
+                invalid_summary = copy.deepcopy(summary)
+                invalid_summary["variant_results"][0][field_name] = True
+                self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        invalid_summary = copy.deepcopy(summary)
+        invalid_summary["decision_status"] = "pass"
+        self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        invalid_summary = copy.deepcopy(summary)
+        invalid_summary["recommendation"] = "adopt_variant"
+        self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+    def test_ocr_summary_keeps_random_sample_requirements(self) -> None:
+        """Корпусная сводка не может выдать пустую случайную часть за результат."""
+
+        schema_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "schemas"
+            / "ocr_qa_summary.schema.json"
+        )
+        example_path = (
+            PROJECT_ROOT
+            / "manifests"
+            / "templates"
+            / "ocr_qa_summary.example.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        summary = json.loads(example_path.read_text(encoding="utf-8"))
+        validator = Draft202012Validator(
+            schema,
+            format_checker=FormatChecker(),
+        )
+
+        self.assertEqual(list(validator.iter_errors(summary)), [])
+
+        for field_name in ("pdf_count", "work_count", "prose_characters"):
+            with self.subTest(field_name=field_name):
+                invalid_summary = copy.deepcopy(summary)
+                invalid_summary["sample_counts"][field_name] = 0
+                self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        invalid_summary = copy.deepcopy(summary)
+        invalid_summary["variant_results"][0]["overall"] = None
+        self.assertTrue(list(validator.iter_errors(invalid_summary)))
+
+        invalid_summary = copy.deepcopy(summary)
+        invalid_summary["variant_results"][0]["source_layout_groups"] = []
+        self.assertTrue(list(validator.iter_errors(invalid_summary)))
 
     def test_metadata_only_retrieval_cannot_invent_http_response(self) -> None:
         """Событие без снимка ответа не должно содержать фиктивные HTTP-поля."""

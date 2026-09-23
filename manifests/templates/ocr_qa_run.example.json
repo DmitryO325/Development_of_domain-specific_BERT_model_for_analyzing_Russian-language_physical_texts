@@ -9,6 +9,8 @@
   "source_artifacts_manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "sample_frame_path": "manifests/templates/ocr_qa_frame.example.jsonl",
   "sample_frame_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "candidate_manifest_path": "manifests/templates/ocr_qa_candidate.example.jsonl",
+  "candidate_manifest_sha256": "abababababababababababababababababababababababababababababababab",
   "annotation_guide_path": "manifests/templates/demo/ocr_annotation_guide.md",
   "annotation_guide_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "code_commit": "0000000",

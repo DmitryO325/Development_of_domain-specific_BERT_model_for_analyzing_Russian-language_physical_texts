@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:ocr-qa-page-plan:v1",
+  "title": "План страниц инженерной проверки OCR",
+  "description": "Читаемый человеком план целевого отбора страниц до подготовки неизменяемого кадра проверки.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_version",
+    "source_id",
+    "source_group_id",
+    "publication_year",
+    "render_dpi",
+    "minimum_prose_characters",
+    "pages"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "ocr-qa-page-plan-v1"},
+    "protocol_version": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "source_group_id": {"type": "string", "minLength": 1},
+    "publication_year": {"type": "integer", "minimum": 1, "maximum": 9999},
+    "render_dpi": {"type": "integer", "minimum": 72},
+    "minimum_prose_characters": {"type": "integer", "minimum": 1},
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/page"}
+    }
+  },
+  "$defs": {
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_pdf_path",
+        "page_number",
+        "printed_page_label",
+        "layout",
+        "scan_quality",
+        "selection_tags",
+        "selection_reason"
+      ],
+      "properties": {
+        "source_pdf_path": {"type": "string", "minLength": 1},
+        "page_number": {"type": "integer", "minimum": 1},
+        "printed_page_label": {"type": ["string", "null"], "minLength": 1},
+        "layout": {"$ref": "#/$defs/layout"},
+        "scan_quality": {"$ref": "#/$defs/scanQuality"},
+        "first_pass": {"type": "boolean"},
+        "selection_tags": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/selectionTag"}
+        },
+        "selection_reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "layout": {
+      "type": "string",
+      "enum": ["one_column", "two_column", "mixed", "other"]
+    },
+    "scanQuality": {
+      "type": "string",
+      "enum": ["born_digital", "clean_scan", "noisy_scan"]
+    },
+    "selectionTag": {
+      "type": "string",
+      "enum": [
+        "running_text",
+        "first_page",
+        "two_columns",
+        "mixed_layout",
+        "formula",
+        "non_russian_text",
+        "bibliography",
+        "table_or_figure",
+        "line_break_hyphenation",
+        "image_noise",
+        "other"
+      ]
+    }
+  }
+}

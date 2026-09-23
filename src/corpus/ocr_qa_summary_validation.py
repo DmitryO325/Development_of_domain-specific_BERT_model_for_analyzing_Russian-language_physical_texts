@@ -75,6 +75,11 @@ class _OcrQaSummaryMixin:
             if isinstance(variant.get("variant_id"), str)
         }
         variant_results = summary.get("variant_results", [])
+        manual_challenge_only = (
+            run.get("run_kind") == "engineering_pilot"
+            and run.get("selection_plan", {}).get("method")
+            == "manual_challenge_only"
+        )
         self._check_unique_values(
             variant_results,
             "variant_id",
@@ -114,15 +119,22 @@ class _OcrQaSummaryMixin:
                 for formula in variant_formulas
                 if formula.get("selection_role") == "stratified_random"
             ]
-            self._check_aggregate(
-                variant_result.get("overall"),
-                random_pages,
-                random_formulas,
-                run,
-                aggregate_kind="overall",
-                label=f"Вариант {variant_id!r}, общий итог",
-                errors=errors,
-            )
+            if manual_challenge_only:
+                if variant_result.get("overall") is not None:
+                    errors.append(
+                        f"Вариант {variant_id!r}: инженерный пилот "
+                        "manual_challenge_only должен иметь overall=null."
+                    )
+            else:
+                self._check_aggregate(
+                    variant_result.get("overall"),
+                    random_pages,
+                    random_formulas,
+                    run,
+                    aggregate_kind="overall",
+                    label=f"Вариант {variant_id!r}, общий итог",
+                    errors=errors,
+                )
             self._validate_source_layout_groups(
                 variant_result,
                 random_pages,
@@ -531,15 +543,18 @@ class _OcrQaSummaryMixin:
     ) -> None:
         """Проверить выводимые флаги основного критерия и H3 для одного варианта."""
 
-        overall = variant_result.get("overall", {})
+        overall = variant_result.get("overall")
         groups = variant_result.get("source_layout_groups", [])
         expected_core = (
-            overall.get("prose_criteria_status") == "pass"
+            isinstance(overall, dict)
+            and overall.get("prose_criteria_status") == "pass"
             and bool(groups)
             and all(group.get("prose_criteria_status") == "pass" for group in groups)
         )
         expected_h3 = (
-            expected_core and overall.get("formula_criteria_status") == "pass"
+            expected_core
+            and isinstance(overall, dict)
+            and overall.get("formula_criteria_status") == "pass"
         )
         variant_id = variant_result.get("variant_id")
 
