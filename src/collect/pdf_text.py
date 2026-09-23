@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import time
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,6 +36,18 @@ COLUMN_GUTTER_PT = 14
 COLUMN_SPLIT_RATIO = 0.5
 # Разрешение изображения для OCR.
 OCR_DPI = 200
+# Рабочий язык выбран по калибровке DEC-015; явные варианты сохраняют свой язык.
+DEFAULT_OCR_LANGUAGE = "rus+eng"
+# Смена языка не должна смешивать новые результаты с прежним русским OCR.
+DEFAULT_PDF_EXTRACTION_VERSION = "pdf-text-rus-eng-v2"
+# УФН сохраняет прежнюю смешанную шапку; другие макеты выбираются явно.
+DEFAULT_OCR_LAYOUT = "ufn"
+OCR_LAYOUTS = ("ufn", "single-column", "two-column")
+OCR_LAYOUT_VERSIONS = {
+    "ufn": DEFAULT_PDF_EXTRACTION_VERSION,
+    "single-column": "pdf-text-rus-eng-single-column-v3",
+    "two-column": "pdf-text-rus-eng-two-column-v3",
+}
 # Разрешение для анализа вёрстки.
 LAYOUT_SCAN_DPI = 150
 # Отступ ниже найденного начала колонок.
@@ -67,6 +80,32 @@ class PdfPageText:
 
 
 @dataclass(frozen=True, slots=True)
+class PdfPageRender:
+    """Растровое изображение одной физической страницы PDF."""
+
+    page_index: int
+    page_number: int
+    png: bytes
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        """Проверить нумерацию и размер изображения."""
+
+        if self.page_index < 0:
+            raise ValueError("page_index не может быть отрицательным")
+
+        if self.page_number != self.page_index + 1:
+            raise ValueError("page_number должен быть равен page_index + 1")
+
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError("Размер изображения должен быть положительным")
+
+        if not self.png.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("Байты страницы не имеют сигнатуры PNG")
+
+
+@dataclass(frozen=True, slots=True)
 class PdfTextExtraction:
     """Выбранный результат извлечения всего PDF и составляющие его страницы."""
 
@@ -93,6 +132,23 @@ class PdfPageExportResult:
 
     manifest_path: Path
     pages: tuple[ExportedPdfPage, ...]
+
+
+def _validate_ocr_layout(ocr_layout: str) -> None:
+    """Отклонить неизвестный макет до чтения PDF или запуска OCR."""
+
+    if ocr_layout not in OCR_LAYOUTS:
+        choices = ", ".join(OCR_LAYOUTS)
+        raise ValueError(
+            f"Неизвестный макет OCR {ocr_layout!r}; доступны: {choices}"
+        )
+
+
+def pdf_extraction_version(ocr_layout: str = DEFAULT_OCR_LAYOUT) -> str:
+    """Вернуть отдельную версию извлечения для выбранного макета OCR."""
+
+    _validate_ocr_layout(ocr_layout)
+    return OCR_LAYOUT_VERSIONS[ocr_layout]
 
 
 def cyrillic_letter_ratio(text: str) -> float:
@@ -242,7 +298,11 @@ def _column_clips(
     return left, right
 
 
-def _ocr_pixmap(pixmap: fitz.Pixmap, *, lang: str = "rus") -> str:
+def _ocr_pixmap(
+    pixmap: fitz.Pixmap,
+    *,
+    lang: str = DEFAULT_OCR_LANGUAGE,
+) -> str:
     """Распознать текст на растровом изображении PyMuPDF."""
 
     import pytesseract
@@ -257,7 +317,7 @@ def _ocr_page_region(
     clip: fitz.Rect,
     *,
     dpi: int = OCR_DPI,
-    lang: str = "rus",
+    lang: str = DEFAULT_OCR_LANGUAGE,
 ) -> str:
     """Распознать заданную прямоугольную область PDF-страницы."""
 
@@ -273,7 +333,7 @@ def _ocr_columns_in_rect(
     rectangle: fitz.Rect,
     *,
     dpi: int = OCR_DPI,
-    lang: str = "rus",
+    lang: str = DEFAULT_OCR_LANGUAGE,
 ) -> str:
     """Распознать две колонки: сначала левую, затем правую."""
 
@@ -296,7 +356,7 @@ def _ocr_page_full(
     clip: fitz.Rect | None = None,
     *,
     dpi: int = OCR_DPI,
-    lang: str = "rus",
+    lang: str = DEFAULT_OCR_LANGUAGE,
 ) -> str:
     """Распознать всю PDF-страницу или одну её область."""
 
@@ -406,13 +466,23 @@ def _ocr_page_layout(
     *,
     page_index: int = 0,
     dpi: int = OCR_DPI,
-    lang: str = "rus",
+    lang: str = DEFAULT_OCR_LANGUAGE,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
 ) -> str:
-    """Распознать шапку в одну колонку, а основной текст — в две."""
+    """Распознать страницу по явному макету или прежним правилам УФН."""
+
+    _validate_ocr_layout(ocr_layout)
 
     import fitz
 
     rectangle = page.rect
+
+    if ocr_layout == "single-column":
+        return _ocr_page_full(page, clip=rectangle, dpi=dpi, lang=lang)
+
+    if ocr_layout == "two-column":
+        return _ocr_columns_in_rect(page, rectangle, dpi=dpi, lang=lang)
+
     split_y = _detect_two_column_split_y(page, page_index=page_index)
 
     if split_y is None:
@@ -449,6 +519,117 @@ def _combine_page_texts(
     return _clean_pdf_lines(normalize_whitespace(combined))
 
 
+def _validated_page_indices(
+    page_indices: Iterable[int],
+    *,
+    page_count: int,
+) -> tuple[int, ...]:
+    """Проверить выбранные индексы и сохранить их порядок."""
+
+    indices = tuple(page_indices)
+
+    if not indices:
+        raise ValueError("Список page_indices не может быть пустым")
+
+    has_invalid_type = any(
+        isinstance(page_index, bool) or not isinstance(page_index, int)
+        for page_index in indices
+    )
+
+    if has_invalid_type:
+        raise TypeError("Каждый page_index должен быть целым числом")
+
+    if len(set(indices)) != len(indices):
+        raise ValueError("page_indices не должен содержать повторы")
+
+    for page_index in indices:
+        if not 0 <= page_index < page_count:
+            raise ValueError(
+                f"page_index={page_index} вне диапазона "
+                f"от 0 до {page_count - 1}"
+            )
+
+    return indices
+
+
+def extract_selected_pages_from_pdf(
+    path: Path,
+    page_indices: Iterable[int],
+) -> tuple[PdfPageText, ...]:
+    """Извлечь встроенный текст только из выбранных PDF-страниц."""
+
+    document = _fitz_open(path)
+
+    try:
+        indices = _validated_page_indices(
+            page_indices,
+            page_count=document.page_count,
+        )
+        pages: list[PdfPageText] = []
+
+        for page_index in indices:
+            page = document.load_page(page_index)
+            page_text = page.get_text("text")
+
+            if not isinstance(page_text, str):
+                raise TypeError("PyMuPDF вернул не строку для режима text")
+
+            pages.append(
+                PdfPageText(
+                    page_index=page_index,
+                    page_number=page_index + 1,
+                    text=_clean_pdf_lines(page_text),
+                )
+            )
+
+    finally:
+        document.close()
+
+    return tuple(pages)
+
+
+def render_selected_pdf_pages(
+    path: Path,
+    page_indices: Iterable[int],
+    *,
+    dpi: int = OCR_DPI,
+) -> tuple[PdfPageRender, ...]:
+    """Растеризовать выбранные PDF-страницы в PNG."""
+
+    if dpi < 72:
+        raise ValueError("dpi должно быть не меньше 72")
+
+    import fitz
+
+    document = _fitz_open(path)
+
+    try:
+        indices = _validated_page_indices(
+            page_indices,
+            page_count=document.page_count,
+        )
+        matrix = fitz.Matrix(dpi / 72, dpi / 72)
+        renders: list[PdfPageRender] = []
+
+        for page_index in indices:
+            page = document.load_page(page_index)
+            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            renders.append(
+                PdfPageRender(
+                    page_index=page_index,
+                    page_number=page_index + 1,
+                    png=pixmap.tobytes("png"),
+                    width=pixmap.width,
+                    height=pixmap.height,
+                )
+            )
+
+    finally:
+        document.close()
+
+    return tuple(renders)
+
+
 def extract_pages_from_pdf(path: Path) -> tuple[PdfPageText, ...]:
     """Извлечь встроенный текст отдельно из каждой физической страницы PDF."""
 
@@ -480,16 +661,20 @@ def extract_pages_from_pdf(path: Path) -> tuple[PdfPageText, ...]:
 def extract_pages_from_pdf_ocr(
     path: Path,
     *,
-    lang: str = "rus",
+    lang: str = DEFAULT_OCR_LANGUAGE,
     dpi: int = OCR_DPI,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
 ) -> tuple[PdfPageText, ...]:
     """
-    Распознать каждую страницу PDF УФН с учётом смешанной вёрстки.
+    Распознать каждую страницу PDF с учётом выбранного макета.
 
-    Верх первой страницы распознаётся как одна колонка, а основной текст —
-    как левая и правая колонки. Граница каждой физической страницы сохраняется.
+    В режиме ufn верх первой страницы распознаётся как одна колонка,
+    а основной текст — как левая и правая колонки. Явные single-column
+    и two-column применяются ко всем страницам без определения шапки.
+    По умолчанию сохраняются режим УФН и языки rus+eng.
     """
 
+    _validate_ocr_layout(ocr_layout)
     _require_tesseract()
 
     pages: list[PdfPageText] = []
@@ -503,6 +688,58 @@ def extract_pages_from_pdf_ocr(
                 page_index=page_index,
                 dpi=dpi,
                 lang=lang,
+                ocr_layout=ocr_layout,
+            )
+            pages.append(
+                PdfPageText(
+                    page_index=page_index,
+                    page_number=page_index + 1,
+                    text=_clean_pdf_lines(page_text),
+                )
+            )
+
+    finally:
+        document.close()
+
+    return tuple(pages)
+
+
+def extract_selected_pages_from_pdf_ocr(
+    path: Path,
+    page_indices: Iterable[int],
+    *,
+    lang: str = DEFAULT_OCR_LANGUAGE,
+    dpi: int = OCR_DPI,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
+) -> tuple[PdfPageText, ...]:
+    """Распознать только выбранные PDF-страницы с учётом макета."""
+
+    _validate_ocr_layout(ocr_layout)
+
+    if not lang.strip():
+        raise ValueError("lang не может быть пустым")
+
+    if dpi < 72:
+        raise ValueError("dpi должно быть не меньше 72")
+
+    _require_tesseract()
+    document = _fitz_open(path)
+
+    try:
+        indices = _validated_page_indices(
+            page_indices,
+            page_count=document.page_count,
+        )
+        pages: list[PdfPageText] = []
+
+        for page_index in indices:
+            page = document.load_page(page_index)
+            page_text = _ocr_page_layout(
+                page,
+                page_index=page_index,
+                dpi=dpi,
+                lang=lang,
+                ocr_layout=ocr_layout,
             )
             pages.append(
                 PdfPageText(
@@ -528,12 +765,15 @@ def extract_text_from_pdf(path: Path) -> str:
 def extract_text_from_pdf_ocr(
     path: Path,
     *,
-    lang: str = "rus",
+    lang: str = DEFAULT_OCR_LANGUAGE,
     dpi: int = OCR_DPI,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
 ) -> str:
-    """Распознать все страницы PDF УФН с учётом смешанной вёрстки."""
+    """Собрать текст всех страниц, распознанных по выбранному макету."""
 
-    pages = extract_pages_from_pdf_ocr(path, lang=lang, dpi=dpi)
+    pages = extract_pages_from_pdf_ocr(
+        path, lang=lang, dpi=dpi, ocr_layout=ocr_layout
+    )
     return _combine_page_texts(pages, method="pdf_ocr_layout")
 
 
@@ -558,16 +798,45 @@ def _clean_pdf_lines(text: str) -> str:
     return normalize_whitespace("\n".join(lines))
 
 
+def text_sidecar_path(
+    pdf_path: Path,
+    method: str,
+    *,
+    text_dir: Path,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
+) -> Path:
+    """Построить путь TXT, отделяя новую версию OCR от прежних файлов."""
+
+    extraction_version = pdf_extraction_version(ocr_layout)
+
+    if method == "pdf_ocr_layout":
+        text_dir = text_dir / extraction_version
+
+    return text_dir / f"{pdf_path.stem}_{method}.txt"
+
+
 def save_text_sidecar(
-    pdf_path: Path, text: str, method: str, *, text_dir: Path
+    pdf_path: Path,
+    text: str,
+    method: str,
+    *,
+    text_dir: Path,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
 ) -> Path:
     """Сохранить извлечённый текст и технический заголовок в UTF-8."""
 
-    text_dir.mkdir(parents=True, exist_ok=True)
-    output_path = text_dir / f"{pdf_path.stem}_{method}.txt"
+    output_path = text_sidecar_path(
+        pdf_path, method, text_dir=text_dir, ocr_layout=ocr_layout
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    layout_descriptions = {
+        "ufn": "top=1 col (title/PACS/DOI), bottom=left col then right col",
+        "single-column": "full page as one column",
+        "two-column": "full left column then full right column",
+    }
     layout = (
-        "top=1 col (title/PACS/DOI), bottom=left col then right col"
+        layout_descriptions[ocr_layout]
         if method == "pdf_ocr_layout"
         else "embedded text layer"
     )
@@ -576,10 +845,19 @@ def save_text_sidecar(
         f"# extracted via {method}\n"
         f"# source pdf: {pdf_path.name}\n"
         f"# chars: {len(text)}\n"
-        f"# layout: {layout}\n\n"
+        f"# layout: {layout}\n"
     )
 
-    output_path.write_text(header + text, encoding="utf-8")
+    if method == "pdf_ocr_layout":
+        header += (
+            f"# ocr language: {DEFAULT_OCR_LANGUAGE}\n"
+            f"# extraction version: {pdf_extraction_version(ocr_layout)}\n"
+        )
+
+        if ocr_layout != DEFAULT_OCR_LAYOUT:
+            header += f"# ocr layout: {ocr_layout}\n"
+
+    output_path.write_text(header + "\n" + text, encoding="utf-8")
     return output_path
 
 
@@ -834,14 +1112,17 @@ def extract_best_text_result(
     *,
     text_dir: Path | None = None,
     try_ocr: bool = True,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
 ) -> PdfTextExtraction:
     """
     Выбрать лучший общий и постраничный текст: PDF-слой, затем OCR.
 
     Один проход каждого способа сразу даёт общий текст и устойчивые границы
-    физических страниц. OCR для одного варианта повторно не запускается.
+    физических страниц. Макет применяется только к OCR, не к встроенному слою.
+    OCR для одного варианта повторно не запускается.
     """
 
+    _validate_ocr_layout(ocr_layout)
     raw_pages = extract_pages_from_pdf(pdf_path)
     raw = _combine_page_texts(raw_pages, method="pdf")
 
@@ -858,12 +1139,17 @@ def extract_best_text_result(
 
     if try_ocr:
         try:
-            ocr_pages = extract_pages_from_pdf_ocr(pdf_path)
+            ocr_pages = extract_pages_from_pdf_ocr(
+                pdf_path, ocr_layout=ocr_layout
+            )
             method = "pdf_ocr_layout"
             ocr = _combine_page_texts(ocr_pages, method=method)
 
             if text_dir:
-                save_text_sidecar(pdf_path, ocr, method, text_dir=text_dir)
+                save_text_sidecar(
+                    pdf_path, ocr, method, text_dir=text_dir,
+                    ocr_layout=ocr_layout,
+                )
 
             if is_readable_russian(ocr):
                 return PdfTextExtraction(
@@ -900,17 +1186,20 @@ def extract_best_text(
     *,
     text_dir: Path | None = None,
     try_ocr: bool = True,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
 ) -> tuple[str, str, bool]:
     """
     Выбрать лучший текст и вернуть совместимый кортеж результата.
 
     Если ``text_dir`` задан, имя сопутствующего файла совпадает с методом.
+    Результат OCR хранится внутри подкаталога текущей версии извлечения.
     """
 
     result = extract_best_text_result(
         pdf_path,
         text_dir=text_dir,
         try_ocr=try_ocr,
+        ocr_layout=ocr_layout,
     )
 
     return result.text, result.method, result.readable
@@ -921,6 +1210,7 @@ def extract_text_from_pdf_checked(
     *,
     text_dir: Path | None = None,
     try_ocr: bool = True,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
 ) -> tuple[str, bool]:
     """Извлечь текст и вернуть только текст и признак читаемости."""
 
@@ -928,6 +1218,7 @@ def extract_text_from_pdf_checked(
         path,
         text_dir=text_dir,
         try_ocr=try_ocr,
+        ocr_layout=ocr_layout,
     )
 
     return text, readable
@@ -990,12 +1281,14 @@ def pdf_to_text(
     reuse_cached: bool = True,
     text_dir: Path | None = None,
     try_ocr: bool = True,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
 ) -> tuple[str, Path, bool, str]:
     """
     Скачать или взять из кэша PDF и извлечь лучший текст.
     Возвращает ``(текст, путь PDF, читаемость, метод)``.
     """
 
+    _validate_ocr_layout(ocr_layout)
     local = _cache_path(pdf_url, cache_dir)
     used_cache = reuse_cached and _is_valid_cached_pdf(local)
 
@@ -1011,6 +1304,7 @@ def pdf_to_text(
             local,
             text_dir=text_dir,
             try_ocr=try_ocr,
+            ocr_layout=ocr_layout,
         )
 
     except (OSError, RuntimeError, ValueError):
@@ -1025,6 +1319,7 @@ def pdf_to_text(
             local,
             text_dir=text_dir,
             try_ocr=try_ocr,
+            ocr_layout=ocr_layout,
         )
 
     if not _source_url_path(local).exists():

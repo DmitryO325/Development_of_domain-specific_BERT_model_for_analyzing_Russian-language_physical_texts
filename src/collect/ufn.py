@@ -18,6 +18,7 @@ from .pdf_text import (
     pdf_filename,
     pdf_to_text,
     pdf_url_from_article_path,
+    text_sidecar_path,
 )
 
 from .rss_feed import RssScraper
@@ -256,7 +257,11 @@ class UfnScraper:
                         "pdf_file": pdf_filename(pdf_url),
                         "pdf_extract_method": pdf_method,
                         "pdf_text_file": str(
-                            self.pdf_text_dir / f"{pdf_path.stem}_{pdf_method}.txt"
+                            text_sidecar_path(
+                                pdf_path,
+                                pdf_method,
+                                text_dir=self.pdf_text_dir,
+                            )
                         ),
                     }
                 )

@@ -9,7 +9,7 @@ import unittest
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from scripts.rebuild_from_pdf import _build_parser, run_extraction
 from src.collect import pdf_text as pdf_text_module
@@ -21,6 +21,8 @@ from src.collect.pdf_text import (
     extract_best_text_result,
     extract_pages_from_pdf,
     extract_pages_from_pdf_ocr,
+    extract_selected_pages_from_pdf_ocr,
+    extract_text_from_pdf_ocr,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,13 +104,15 @@ class PageExtractionTests(unittest.TestCase):
             *,
             page_index: int = 0,
             dpi: int = 200,
-            lang: str = "rus",
+            lang: str = "rus+eng",
+            ocr_layout: str = "ufn",
         ) -> str:
             """Зафиксировать индекс и вернуть различимый текст страницы."""
 
             self.assertIs(page, document.pages[page_index])
             self.assertEqual(dpi, 200)
-            self.assertEqual(lang, "rus")
+            self.assertEqual(lang, "rus+eng")
+            self.assertEqual(ocr_layout, "ufn")
             visited_indices.append(page_index)
             return f"Страница {page_index + 1}"
 
@@ -125,6 +129,129 @@ class PageExtractionTests(unittest.TestCase):
         self.assertEqual(visited_indices, [0, 1])
         self.assertEqual([page.text for page in pages], ["Страница 1", "Страница 2"])
         self.assertTrue(document.closed)
+
+    def test_selected_ocr_preserves_language_and_page_order(self) -> None:
+        """Выборочные страницы должны получать общий язык или явный rus."""
+
+        for language in (None, "rus"):
+            with self.subTest(language=language):
+                document = _FakeDocument([_FakePage("") for _ in range(3)])
+                options = {} if language is None else {"lang": language}
+                expected_language = language or "rus+eng"
+
+                with (
+                    patch("src.collect.pdf_text._require_tesseract"),
+                    patch("src.collect.pdf_text._fitz_open", return_value=document),
+                    patch(
+                        "src.collect.pdf_text._ocr_page_layout",
+                        return_value="Физический текст страницы",
+                    ) as recognize_page,
+                ):
+                    pages = extract_selected_pages_from_pdf_ocr(
+                        Path("article.pdf"),
+                        (2, 0),
+                        dpi=250,
+                        **options,
+                    )
+
+                self.assertEqual([page.page_index for page in pages], [2, 0])
+                self.assertEqual(recognize_page.call_count, 2)
+
+                for page_index, call in zip(
+                    (2, 0),
+                    recognize_page.call_args_list,
+                    strict=True,
+                ):
+                    self.assertEqual(call.args, (document.pages[page_index],))
+                    self.assertEqual(
+                        call.kwargs,
+                        {
+                            "page_index": page_index,
+                            "dpi": 250,
+                            "lang": expected_language,
+                            "ocr_layout": "ufn",
+                        },
+                    )
+
+                self.assertTrue(document.closed)
+
+    def test_full_ocr_preserves_explicit_russian_language(self) -> None:
+        """Явный rus должен переопределять новый язык для всего документа."""
+
+        document = _FakeDocument([_FakePage("")])
+
+        with (
+            patch("src.collect.pdf_text._require_tesseract"),
+            patch("src.collect.pdf_text._fitz_open", return_value=document),
+            patch(
+                "src.collect.pdf_text._ocr_page_layout",
+                return_value="Русский текст",
+            ) as recognize_page,
+        ):
+            pages = extract_pages_from_pdf_ocr(Path("article.pdf"), lang="rus")
+
+        recognize_page.assert_called_once_with(
+            document.pages[0],
+            page_index=0,
+            dpi=200,
+            lang="rus",
+            ocr_layout="ufn",
+        )
+        self.assertEqual(pages, (PdfPageText(0, 1, "Русский текст"),))
+        self.assertTrue(document.closed)
+
+    def test_text_wrapper_passes_selected_ocr_language(self) -> None:
+        """Сборка общего текста должна передавать язык постраничному OCR."""
+
+        pages = (PdfPageText(0, 1, "Первая"), PdfPageText(1, 2, "Вторая"))
+
+        for language in (None, "rus"):
+            with self.subTest(language=language):
+                options = {} if language is None else {"lang": language}
+
+                with patch(
+                    "src.collect.pdf_text.extract_pages_from_pdf_ocr",
+                    return_value=pages,
+                ) as extractor:
+                    text = extract_text_from_pdf_ocr(
+                        Path("article.pdf"),
+                        dpi=250,
+                        **options,
+                    )
+
+                extractor.assert_called_once_with(
+                    Path("article.pdf"),
+                    lang=language or "rus+eng",
+                    dpi=250,
+                    ocr_layout="ufn",
+                )
+                self.assertEqual(text, "Первая\n\nВторая")
+
+    def test_pixmap_passes_language_to_tesseract(self) -> None:
+        """Сам вызов Tesseract должен получать rus+eng или явно заданный rus."""
+
+        for language in (None, "rus"):
+            with self.subTest(language=language):
+                pixmap = MagicMock()
+                pixmap.tobytes.return_value = b"test-image"
+                options = {} if language is None else {"lang": language}
+
+                with (
+                    patch("PIL.Image.open") as open_image,
+                    patch(
+                        "pytesseract.image_to_string",
+                        return_value="Текст Bell Labs",
+                    ) as recognize_image,
+                ):
+                    text = pdf_text_module._ocr_pixmap(pixmap, **options)
+
+                pixmap.tobytes.assert_called_once_with("png")
+                recognize_image.assert_called_once_with(
+                    open_image.return_value.__enter__.return_value,
+                    lang=language or "rus+eng",
+                    config="--psm 6",
+                )
+                self.assertEqual(text, "Текст Bell Labs")
 
     def test_best_result_reuses_pages_from_single_ocr_pass(self) -> None:
         """Общий OCR-текст должен собираться из уже полученных страниц."""
@@ -150,7 +277,7 @@ class PageExtractionTests(unittest.TestCase):
             result = extract_best_text_result(Path("article.pdf"))
 
         embedded_extractor.assert_called_once_with(Path("article.pdf"))
-        ocr_extractor.assert_called_once_with(Path("article.pdf"))
+        ocr_extractor.assert_called_once_with(Path("article.pdf"), ocr_layout="ufn")
         self.assertEqual(result.method, "pdf_ocr_layout")
         self.assertTrue(result.readable)
         self.assertEqual(result.pages, ocr_pages)
@@ -418,6 +545,8 @@ class PageExportTests(unittest.TestCase):
         )
 
         self.assertFalse(default_options.export_pages)
+        self.assertIsNone(default_options.extraction_version)
+        self.assertEqual(default_options.ocr_layout, "ufn")
         self.assertTrue(enabled_options.export_pages)
         self.assertEqual(
             enabled_options.page_output_dir,
@@ -453,16 +582,18 @@ class PageExportTests(unittest.TestCase):
             extraction_calls: list[Path] = []
 
             def extractor(
-                source_path: Path,
+                pdf_path: Path,
                 *,
                 text_dir: Path | None = None,
                 try_ocr: bool = True,
+                ocr_layout: str = "ufn",
             ) -> PdfTextExtraction:
                 """Вернуть один заранее подготовленный постраничный результат."""
 
                 self.assertIsNone(text_dir)
                 self.assertFalse(try_ocr)
-                extraction_calls.append(source_path)
+                self.assertEqual(ocr_layout, "ufn")
+                extraction_calls.append(pdf_path)
                 return extraction
 
             manifest_dir = project_root / "manifests"
@@ -493,11 +624,15 @@ class PageExportTests(unittest.TestCase):
                     extractor=extractor,
                 )
 
-            report_path = manifest_dir / "results" / "input_extraction.jsonl"
+            report_path = (
+                manifest_dir
+                / "results"
+                / "input_pdf-text-rus-eng-v2_extraction.jsonl"
+            )
             report = json.loads(report_path.read_text(encoding="utf-8"))
             exported_manifest = (
                 page_output_dir
-                / "pdf-text-v1"
+                / "pdf-text-rus-eng-v2"
                 / source_sha256
                 / "pdf_unreadable"
                 / "pages.jsonl"
@@ -517,10 +652,10 @@ class PageExportTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             project_root = Path(temporary_directory)
-            pdf_path = project_root / "data" / "raw" / "article.pdf"
-            pdf_path.parent.mkdir(parents=True)
-            pdf_path.write_bytes(b"%PDF-test\n%%EOF")
-            source_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+            expected_pdf_path = project_root / "data" / "raw" / "article.pdf"
+            expected_pdf_path.parent.mkdir(parents=True)
+            expected_pdf_path.write_bytes(b"%PDF-test\n%%EOF")
+            source_sha256 = hashlib.sha256(expected_pdf_path.read_bytes()).hexdigest()
             page_text = "Короткий текст страницы"
             extraction = PdfTextExtraction(
                 text=page_text,
@@ -541,21 +676,23 @@ class PageExportTests(unittest.TestCase):
             temporary_export_paths: list[Path] = []
 
             def extractor(
-                source_path: Path,
+                pdf_path: Path,
                 *,
                 text_dir: Path | None = None,
                 try_ocr: bool = True,
+                ocr_layout: str = "ufn",
             ) -> PdfTextExtraction:
                 """Вернуть подготовленный результат без обращения к OCR."""
 
-                self.assertEqual(source_path, pdf_path.resolve())
+                self.assertEqual(pdf_path, expected_pdf_path.resolve())
                 self.assertIsNone(text_dir)
                 self.assertFalse(try_ocr)
+                self.assertEqual(ocr_layout, "ufn")
                 return extraction
 
             def page_exporter(
-                source_path: Path,
-                page_extraction: PdfTextExtraction,
+                pdf_path: Path,
+                extraction: PdfTextExtraction,
                 output_dir: Path,
                 *,
                 extraction_version: str,
@@ -566,8 +703,8 @@ class PageExportTests(unittest.TestCase):
 
                 temporary_export_paths.append(output_dir)
                 return export_pdf_pages(
-                    source_path,
-                    page_extraction,
+                    pdf_path,
+                    extraction,
                     output_dir,
                     extraction_version=extraction_version,
                     source_pdf_path=source_pdf_path,
@@ -609,7 +746,11 @@ class PageExportTests(unittest.TestCase):
             self.assertFalse(temporary_export_paths[0].exists())
             self.assertFalse(configured_output.exists())
             self.assertFalse(
-                (manifest_dir / "results" / "input_extraction.jsonl").exists()
+                (
+                    manifest_dir
+                    / "results"
+                    / "input_pdf-text-rus-eng-v2_extraction.jsonl"
+                ).exists()
             )
 
 

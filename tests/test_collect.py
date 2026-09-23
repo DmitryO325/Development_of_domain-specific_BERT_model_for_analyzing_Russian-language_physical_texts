@@ -24,6 +24,7 @@ from src.collect.base import (
     html_to_text,
 )
 from src.collect.pdf_text import (
+    DEFAULT_PDF_EXTRACTION_VERSION,
     PdfPageText,
     _clean_pdf_lines,
     download_pdf,
@@ -31,6 +32,8 @@ from src.collect.pdf_text import (
     pdf_filename,
     pdf_to_text,
     pdf_url_from_article_path,
+    save_text_sidecar,
+    text_sidecar_path,
 )
 from src.collect.rss_feed import RssScraper
 from src.collect.ufn import UfnScraper, _drop_nav_prefix
@@ -319,6 +322,54 @@ class PdfTextTests(unittest.TestCase):
             self.assertEqual(method, "pdf")
             self.assertTrue((root / f"article_{method}.txt").is_file())
 
+    def test_ocr_sidecar_preserves_previous_unversioned_text(self) -> None:
+        """Новый языковой режим не должен перезаписывать прежний OCR-текст."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            pdf_path = root / "article.pdf"
+            previous_path = root / "article_pdf_ocr_layout.txt"
+            previous_bytes = "Прежний результат только русского OCR.".encode(
+                "utf-8"
+            )
+            previous_path.write_bytes(previous_bytes)
+
+            output_path = save_text_sidecar(
+                pdf_path,
+                "Новый текст с названием Bell Labs.",
+                "pdf_ocr_layout",
+                text_dir=root,
+            )
+
+            self.assertEqual(
+                output_path,
+                root / DEFAULT_PDF_EXTRACTION_VERSION
+                / "article_pdf_ocr_layout.txt",
+            )
+            self.assertEqual(previous_path.read_bytes(), previous_bytes)
+            self.assertIn(
+                "# ocr language: rus+eng",
+                output_path.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "# extraction version: pdf-text-rus-eng-v2",
+                output_path.read_text(encoding="utf-8"),
+            )
+
+    def test_non_ocr_sidecars_keep_existing_paths(self) -> None:
+        """Изменение OCR не должно переименовывать встроенный текстовый слой."""
+
+        root = Path("data/raw/pdf_text")
+
+        for method in ("pdf", "pdf_unreadable"):
+            with self.subTest(method=method):
+                self.assertEqual(
+                    text_sidecar_path(
+                        Path("article.pdf"), method, text_dir=root
+                    ),
+                    root / f"article_{method}.txt",
+                )
+
     def test_invalid_cache_is_downloaded_again(self) -> None:
         """HTML-файл большого размера не должен считаться PDF-кэшем."""
 
@@ -539,6 +590,50 @@ class RssScraperTests(unittest.TestCase):
 
 class UfnScraperTests(unittest.TestCase):
     """Проверки обхода архива и очистки текста УФН."""
+
+    def test_article_references_versioned_ocr_sidecar(self) -> None:
+        """Карточка статьи должна ссылаться на TXT текущей версии OCR."""
+
+        text_dir = Path("data/raw/pdf_text")
+        scraper = UfnScraper(
+            delay_seconds=0,
+            text_mode="pdf",
+            pdf_text_dir=text_dir,
+        )
+        article_metadata = (
+            "<p>Описание статьи</p>",
+            "https://ufn.ru/ufn26/ufn26_8/Russian/r268a.pdf",
+            "Физическая статья",
+            [],
+            None,
+            {},
+        )
+
+        with (
+            patch.object(
+                scraper, "_parse_article_html", return_value=article_metadata
+            ),
+            patch(
+                "src.collect.ufn.pdf_to_text",
+                return_value=(
+                    "Распознанный текст физической статьи. " * 30,
+                    Path("data/raw/pdf/r268a.pdf"),
+                    True,
+                    "pdf_ocr_layout",
+                ),
+            ),
+        ):
+            document = scraper.parse_article("/ru/articles/2026/8/a/")
+
+        if document is None:
+            self.fail("Сборщик не вернул тестовую статью")
+
+        self.assertEqual(
+            document.extra["pdf_text_file"],
+            str(
+                text_dir / "pdf-text-rus-eng-v2" / "r268a_pdf_ocr_layout.txt"
+            ),
+        )
 
     def test_issues_are_sorted_numerically(self) -> None:
         """Номер 10 должен сортироваться после номера 9 по числовому значению."""

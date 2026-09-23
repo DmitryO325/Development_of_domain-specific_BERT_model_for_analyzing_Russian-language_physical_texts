@@ -19,11 +19,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.collect.pdf_text import (  # noqa: E402
+    DEFAULT_OCR_LAYOUT,
+    DEFAULT_PDF_EXTRACTION_VERSION,
+    OCR_LAYOUTS,
     PdfPageExportResult,
     PdfTextExtraction,
     cyrillic_letter_ratio,
     export_pdf_pages,
     extract_best_text_result,
+    pdf_extraction_version,
 )
 from src.corpus.extraction_registration import (  # noqa: E402
     find_registered_pdf_artifact,
@@ -40,7 +44,7 @@ from src.corpus.manifests import (  # noqa: E402
     canonical_json,
 )
 
-DEFAULT_EXTRACTION_VERSION = "pdf-text-v1"
+DEFAULT_EXTRACTION_VERSION = DEFAULT_PDF_EXTRACTION_VERSION
 EXTRACTION_REPORT_SCHEMA_VERSION = "extraction-pilot-v2"
 EXPECTED_EXTRACTION_ERRORS = (
     ImportError,
@@ -60,6 +64,7 @@ class ExtractionFunction(Protocol):
         *,
         text_dir: Path | None = None,
         try_ocr: bool = True,
+        ocr_layout: str = DEFAULT_OCR_LAYOUT,
     ) -> PdfTextExtraction | tuple[str, str, bool]:
         """Вернуть полный или совместимый результат извлечения."""
 
@@ -121,15 +126,26 @@ def _build_parser(project_root: Path) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--extraction-version",
-        default=DEFAULT_EXTRACTION_VERSION,
-        help="Версия алгоритма извлечения и каталог в data/extracted/",
+        help=(
+            "Версия алгоритма извлечения и каталог в data/extracted/ "
+            "(по умолчанию определяется выбранным макетом OCR rus+eng)"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-layout",
+        choices=OCR_LAYOUTS,
+        default=DEFAULT_OCR_LAYOUT,
+        help=(
+            "Макет OCR: ufn — прежняя обработка УФН; single-column — "
+            "страница целиком; two-column — две колонки (по умолчанию ufn)"
+        ),
     )
     parser.add_argument(
         "--report",
         type=Path,
         help=(
             "JSONL-отчёт пилота; по умолчанию "
-            "manifests/results/<имя_входа>_extraction.jsonl"
+            "manifests/results/<имя_входа>_<версия>_extraction.jsonl"
         ),
     )
     parser.add_argument(
@@ -169,10 +185,43 @@ def _project_path(path: Path, *, project_root: Path) -> Path:
     return path if path.is_absolute() else project_root / path
 
 
-def _default_report_path(input_path: Path, manifest_dir: Path) -> Path:
-    """Построить локальный путь отчёта по имени входного файла."""
+def _resolve_extraction_version(version: str | None, ocr_layout: str) -> str:
+    """Выбрать версию макета и отклонить стандартную версию другого макета."""
 
-    return manifest_dir / "results" / f"{input_path.stem}_extraction.jsonl"
+    default_version = pdf_extraction_version(ocr_layout)
+    extraction_version = normalize_extraction_version(
+        default_version if version is None else version
+    )
+    reserved_versions = {
+        pdf_extraction_version(layout)
+        for layout in OCR_LAYOUTS
+    }
+
+    if (
+        extraction_version in reserved_versions
+        and extraction_version != default_version
+    ):
+        raise ValueError(
+            f"extraction_version={extraction_version!r} относится к другому "
+            f"макету OCR; для {ocr_layout!r} используйте {default_version!r} "
+            "или собственную уникальную версию"
+        )
+
+    return extraction_version
+
+
+def _default_report_path(
+    input_path: Path,
+    manifest_dir: Path,
+    extraction_version: str,
+) -> Path:
+    """Разделить отчёты разных версий, сохраняя прежние результаты."""
+
+    return (
+        manifest_dir
+        / "results"
+        / f"{input_path.stem}_{extraction_version}_extraction.jsonl"
+    )
 
 
 def _unpack_extraction(
@@ -344,6 +393,7 @@ def _report_record(
     text: str = "",
     extraction_method: str | None = None,
     extraction_version: str | None = None,
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
     ocr_attempted: bool = False,
     ocr_version: str | None = None,
     automatic_readability: bool | None = None,
@@ -393,6 +443,7 @@ def _report_record(
             text_artifact.get("ocr_version") if text_artifact else ocr_version
         ),
         "ocr_attempted": ocr_attempted,
+        "ocr_layout": ocr_layout,
         "characters": len(text),
         "words": len(text.split()),
         "cyrillic_letter_ratio": cyrillic_letter_ratio(text),
@@ -478,8 +529,9 @@ def run_extraction(
 
     root = project_root.resolve()
     options = _build_parser(root).parse_args(arguments)
-    extraction_version = normalize_extraction_version(
-        options.extraction_version
+    extraction_version = _resolve_extraction_version(
+        options.extraction_version,
+        options.ocr_layout,
     )
     input_path = _project_path(options.input, project_root=root).resolve()
     manifest_dir = _project_path(options.manifest_dir, project_root=root).resolve()
@@ -491,7 +543,11 @@ def run_extraction(
     report_path = (
         _project_path(options.report, project_root=root).resolve()
         if options.report is not None
-        else _default_report_path(input_path, manifest_dir)
+        else _default_report_path(
+            input_path,
+            manifest_dir,
+            extraction_version,
+        )
     )
     page_output_root = _project_path(
         options.page_output_dir,
@@ -542,6 +598,7 @@ def run_extraction(
                 pdf_path,
                 text_dir=None,
                 try_ocr=not options.no_ocr,
+                ocr_layout=options.ocr_layout,
             )
             (
                 text,
@@ -614,6 +671,7 @@ def run_extraction(
                         text=text,
                         extraction_method=extraction_method,
                         extraction_version=extraction_version,
+                        ocr_layout=options.ocr_layout,
                         ocr_attempted=ocr_attempted,
                         ocr_version=ocr_version,
                         automatic_readability=False,
@@ -652,6 +710,7 @@ def run_extraction(
                     text=text,
                     extraction_method=extraction_method,
                     extraction_version=extraction_version,
+                    ocr_layout=options.ocr_layout,
                     ocr_attempted=ocr_attempted,
                     ocr_version=ocr_version,
                     automatic_readability=True,
@@ -677,6 +736,7 @@ def run_extraction(
                     text=text,
                     extraction_method=extraction_method,
                     extraction_version=extraction_version,
+                    ocr_layout=options.ocr_layout,
                     ocr_attempted=ocr_attempted,
                     ocr_version=ocr_version,
                     automatic_readability=automatic_readability,
