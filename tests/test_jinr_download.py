@@ -8,6 +8,7 @@ import json
 import tempfile
 import unittest
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -15,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from scripts.download_jinr import JinrArchive, collect_metadata, main
 from src.collect.base import HttpResponseSnapshot
-from src.collect.jinr_api import DEFAULT_API_URL
+from src.collect.jinr_api import DEFAULT_API_URL, JinrApiError
 
 
 API_BASE = DEFAULT_API_URL
@@ -40,10 +41,10 @@ def _response(
     )
 
 
-def _search_configuration() -> dict[str, Any]:
-    """Описать языковой фильтр в формате контракта DSpace."""
+def _search_configuration(*, has_files: bool = False) -> dict[str, Any]:
+    """Описать поддерживаемые тестовым сервером фильтры DSpace."""
 
-    return {
+    configuration: dict[str, Any] = {
         "filters": [
             {
                 "filter": "Lang",
@@ -52,18 +53,33 @@ def _search_configuration() -> dict[str, Any]:
         ],
     }
 
+    if has_files:
+        configuration["filters"].append({
+            "filter": "has_content_in_original_bundle",
+            "operators": [{"operator": "equals"}],
+        })
 
-def _search_url(page_index: int, page_size: int = 1) -> str:
+    return configuration
+
+
+def _search_url(
+    page_index: int,
+    page_size: int = 1,
+    *,
+    has_files: bool = False,
+) -> str:
     """Построить тестовую ссылку на страницу русскоязычных записей."""
 
-    query = urlencode(
-        {
-            "dsoType": "item",
-            "f.Lang": "ru,equals",
-            "page": page_index,
-            "size": page_size,
-        },
-    )
+    parameters: dict[str, str | int] = {
+        "dsoType": "item",
+        "f.Lang": "ru,equals",
+    }
+
+    if has_files:
+        parameters["f.has_content_in_original_bundle"] = "true,equals"
+
+    parameters.update({"page": page_index, "size": page_size})
+    query = urlencode(parameters)
 
     return f"{API_BASE}/discover/search/objects?{query}"
 
@@ -73,6 +89,7 @@ def _search_page(
     *,
     total_pages: int = 2,
     next_url: str | None = None,
+    has_files: bool = False,
 ) -> dict[str, Any]:
     """Сформировать страницу HAL с одной записью и применённым фильтром."""
 
@@ -105,8 +122,17 @@ def _search_page(
     if next_url is not None:
         result["_links"]["next"] = {"href": next_url}
 
+    applied_filters = [{"filter": "Lang", "operator": "equals", "value": "ru"}]
+
+    if has_files:
+        applied_filters.append({
+            "filter": "has_content_in_original_bundle",
+            "operator": "equals",
+            "value": "true",
+        })
+
     return {
-        "appliedFilters": [{"filter": "Lang", "operator": "equals", "value": "ru"}],
+        "appliedFilters": applied_filters,
         "_embedded": {"searchResult": result},
     }
 
@@ -187,6 +213,163 @@ class JinrArchiveTests(unittest.TestCase):
 
         self.assertEqual(restored_archive.get_json(url), {"filters": []})
         self.client.get_response.assert_called_once_with(url)
+
+    def test_json_cache_reports_local_read_without_request(self) -> None:
+        """Обычное повторное чтение должно явно сообщать о кеше и не выходить в сеть."""
+
+        url = f"{API_BASE}/discover/search"
+        self.client.get_response.return_value = _response(url, b'{"filters":[]}')
+        self.archive.get_json(url)
+        self.client.get_response.reset_mock()
+
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            result = self.archive.get_json(url)
+
+        self.assertEqual(result, {"filters": []})
+        self.client.get_response.assert_not_called()
+        self.assertIn("JSON: кеш", output.getvalue())
+        self.assertNotIn("JSON: запрос к API", output.getvalue())
+
+    def test_json_refresh_updates_pointer_and_preserves_previous_snapshots(self) -> None:
+        """Обновление должно сохранить прошлые исходники и переключить только указатель."""
+
+        url = f"{API_BASE}/discover/search"
+        old_body = b'{ "filters": [] }\n'
+        new_body = b'{ "filters": ["Lang"] }\n'
+        old_snapshot = _response(url, old_body)
+        new_snapshot = replace(
+            _response(url, new_body),
+            retrieved_at="2026-09-28T12:00:00.000000+00:00",
+        )
+        self.client.get_response.return_value = old_snapshot
+        self.archive.get_json(url)
+        old_evidence = self.archive.json_evidence(url)
+        previous_files = {
+            path: path.read_bytes()
+            for path in self.output_dir.rglob("*")
+            if path.is_file()
+        }
+        self.client.get_response.reset_mock()
+        self.client.get_response.return_value = new_snapshot
+
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            result = self.archive.get_json(url, refresh=True)
+
+        self.assertEqual(result, {"filters": ["Lang"]})
+        self.client.get_response.assert_called_once_with(url)
+        self.assertIn("JSON: запрос к API", output.getvalue())
+        self.assertIn("обновление кеша", output.getvalue())
+
+        for path, content in previous_files.items():
+            self.assertEqual(path.read_bytes(), content)
+
+        new_evidence = self.archive.json_evidence(url)
+        self.assertNotEqual(old_evidence["body_path"], new_evidence["body_path"])
+        self.assertEqual(Path(new_evidence["body_path"]).read_bytes(), new_body)
+        self.assertEqual(new_evidence["body_sha256"], hashlib.sha256(new_body).hexdigest())
+        self.assertEqual(
+            Path(new_evidence["response_metadata_path"]).read_bytes(),
+            new_snapshot.canonical_metadata(),
+        )
+        self.assertEqual(
+            new_evidence["response_metadata_sha256"],
+            new_snapshot.metadata_sha256(),
+        )
+        self.assertEqual(self.archive.get_json(url), {"filters": ["Lang"]})
+        self.client.get_response.assert_called_once_with(url)
+
+    def test_json_refresh_with_same_body_preserves_both_http_snapshots(self) -> None:
+        """Одинаковое тело не должно скрывать время и свидетельство нового запроса."""
+
+        url = f"{API_BASE}/discover/search"
+        body = b'{"filters":[]}'
+        first_snapshot = _response(url, body)
+        second_snapshot = replace(
+            first_snapshot,
+            retrieved_at="2026-09-28T12:00:00.000000+00:00",
+        )
+        self.client.get_response.side_effect = [first_snapshot, second_snapshot]
+        self.archive.get_json(url)
+        first_evidence = self.archive.json_evidence(url)
+
+        self.assertEqual(self.archive.get_json(url, refresh=True), {"filters": []})
+        second_evidence = self.archive.json_evidence(url)
+
+        self.assertEqual(self.client.get_response.call_count, 2)
+        self.assertEqual(first_evidence["body_path"], second_evidence["body_path"])
+        self.assertEqual(first_evidence["body_sha256"], second_evidence["body_sha256"])
+        self.assertNotEqual(
+            first_evidence["response_metadata_path"],
+            second_evidence["response_metadata_path"],
+        )
+        self.assertEqual(len(list(self.output_dir.rglob("*.http.json"))), 2)
+
+        for evidence, snapshot in (
+            (first_evidence, first_snapshot),
+            (second_evidence, second_snapshot),
+        ):
+            metadata_bytes = Path(evidence["response_metadata_path"]).read_bytes()
+            self.assertEqual(metadata_bytes, snapshot.canonical_metadata())
+            self.assertEqual(
+                hashlib.sha256(metadata_bytes).hexdigest(),
+                evidence["response_metadata_sha256"],
+            )
+
+        self.assertEqual(self.archive.get_json(url), {"filters": []})
+        self.assertEqual(self.client.get_response.call_count, 2)
+
+    def test_failed_json_refresh_does_not_fall_back_or_change_cache(self) -> None:
+        """Ошибка обновления должна быть видна вызывающему коду, а прошлый кеш сохранён."""
+
+        for failure in ("forbidden", "status_403", "status_206", "invalid", "array", "null"):
+            with self.subTest(failure=failure):
+                url = f"{API_BASE}/discover/search?case={failure}"
+                old_body = b'{"filters":[]}'
+                self.client.get_response.reset_mock()
+                self.client.get_response.side_effect = None
+                self.client.get_response.return_value = _response(url, old_body)
+                self.archive.get_json(url)
+                previous_files = {
+                    path: path.read_bytes()
+                    for path in self.root.rglob("*")
+                    if path.is_file()
+                }
+                self.client.get_response.reset_mock()
+                expected_exception: type[Exception] = ValueError
+
+                if failure == "forbidden":
+                    self.client.get_response.side_effect = JinrApiError("HTTP 403")
+                    expected_exception = JinrApiError
+
+                elif failure.startswith("status_"):
+                    self.client.get_response.return_value = replace(
+                        _response(url, b'{"filters":["new"]}'),
+                        status_code=int(failure.removeprefix("status_")),
+                    )
+
+                else:
+                    invalid_body = {"invalid": b"not-json", "array": b"[]", "null": b"null"}
+                    self.client.get_response.return_value = _response(url, invalid_body[failure])
+
+                with (
+                    patch("sys.stdout", new_callable=io.StringIO) as output,
+                    self.assertRaises(expected_exception),
+                ):
+                    self.archive.get_json(url, refresh=True)
+
+                self.client.get_response.assert_called_once_with(url)
+                self.assertIn("JSON: запрос к API", output.getvalue())
+                self.assertIn("обновление кеша", output.getvalue())
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in self.root.rglob("*")
+                        if path.is_file()
+                    },
+                    previous_files,
+                )
+                self.assertEqual(self.archive.get_json(url), {"filters": []})
+                self.client.get_response.assert_called_once_with(url)
 
     def test_json_cache_rejects_corrupted_body(self) -> None:
         """Изменённый после загрузки JSON нельзя считать достоверным снимком."""
@@ -289,6 +472,41 @@ class JinrArchiveTests(unittest.TestCase):
         self.assertEqual(self.archive.download_pdf(BITSTREAM_UUID).read_bytes(), pdf_body)
         self.assertEqual(self.client.get_response.call_count, 2)
 
+    def test_filtered_metadata_uses_separate_reusable_cache(self) -> None:
+        """Отбор по файлам не должен подменять кеш общей выдачи или заново получать её."""
+
+        configuration_url = f"{API_BASE}/discover/search"
+        search_url = _search_url(0)
+        filtered_url = _search_url(0, has_files=True)
+        records = (
+            (configuration_url, _search_configuration(has_files=True)),
+            (search_url, _search_page(0, total_pages=1)),
+            (filtered_url, _search_page(0, total_pages=1, has_files=True)),
+        )
+        self.client.get_response.side_effect = [
+            _response(url, json.dumps(record).encode("utf-8"))
+            for url, record in records
+        ]
+
+        self.assertEqual(collect_metadata(self.archive, page_size=1), 1)
+        self.assertEqual(collect_metadata(self.archive, page_size=1, has_files=True), 1)
+        self.assertEqual(
+            [call.args[0] for call in self.client.get_response.call_args_list],
+            [configuration_url, search_url, filtered_url],
+        )
+
+        self.client.reset_mock()
+        self.client.get_response.side_effect = AssertionError("Сетевой запрос запрещён")
+        restored_archive = JinrArchive(
+            output_dir=self.output_dir,
+            state_dir=self.state_dir,
+            client=self.client,
+        )
+
+        self.assertEqual(collect_metadata(restored_archive, page_size=1), 1)
+        self.assertEqual(collect_metadata(restored_archive, page_size=1, has_files=True), 1)
+        self.client.get_response.assert_not_called()
+
 
 class JinrMetadataCollectionTests(unittest.TestCase):
     """Проверки фильтрации и обхода страниц без обращения к серверу."""
@@ -315,6 +533,7 @@ class JinrMetadataCollectionTests(unittest.TestCase):
         self.assertEqual(archive.get_json.call_args_list[2].args[0], next_url)
 
         first_page_url = archive.get_json.call_args_list[1].args[0]
+        self.assertEqual(first_page_url, _search_url(0))
         self.assertEqual(
             parse_qs(urlsplit(first_page_url).query),
             {"dsoType": ["item"], "f.Lang": ["ru,equals"], "page": ["0"], "size": ["1"]},
@@ -480,6 +699,269 @@ class JinrMetadataCollectionTests(unittest.TestCase):
         self.assertEqual(archive.get_json.call_count, 2)
 
 
+class JinrMetadataWithFilesTests(unittest.TestCase):
+    """Проверки отбора карточек с файлами и сохранения условий при пагинации."""
+
+    def test_filtered_pages_preserve_query_and_follow_next_link(self) -> None:
+        """Отбор должен подтверждаться на обеих страницах и передаваться в запросах."""
+
+        next_url = _search_url(1, has_files=True)
+        archive = MagicMock()
+        archive.get_json.side_effect = [
+            _search_configuration(has_files=True),
+            _search_page(0, next_url=next_url, has_files=True),
+            _search_page(1, has_files=True),
+        ]
+
+        self.assertEqual(
+            collect_metadata(archive, max_pages=0, page_size=1, has_files=True),
+            2,
+        )
+        self.assertEqual(
+            [call.args[0] for call in archive.get_json.call_args_list],
+            [f"{API_BASE}/discover/search", _search_url(0, has_files=True), next_url],
+        )
+
+    def test_relative_next_link_is_supported(self) -> None:
+        """Относительная ссылка должна разрешаться без утраты условий отбора."""
+
+        next_url = _search_url(1, has_files=True)
+        next_query = f"?{urlsplit(next_url).query}"
+        archive = MagicMock()
+        archive.get_json.side_effect = [
+            _search_configuration(has_files=True),
+            _search_page(0, next_url=next_query, has_files=True),
+            _search_page(1, has_files=True),
+        ]
+
+        self.assertEqual(
+            collect_metadata(archive, max_pages=0, page_size=1, has_files=True),
+            2,
+        )
+        self.assertEqual(archive.get_json.call_args_list[2].args[0], next_url)
+
+    def test_filtered_plural_search_results_are_supported(self) -> None:
+        """Вариант searchResults должен принимать подтверждённый отбор по файлам."""
+
+        page = _search_page(0, total_pages=1, has_files=True)
+        embedded = page["_embedded"]
+        embedded["searchResults"] = embedded.pop("searchResult")
+        archive = MagicMock()
+        archive.get_json.side_effect = [_search_configuration(has_files=True), page]
+
+        self.assertEqual(collect_metadata(archive, page_size=1, has_files=True), 1)
+        self.assertEqual(archive.get_json.call_count, 2)
+
+    def test_empty_filtered_result_is_accepted(self) -> None:
+        """Пустую выдачу можно принять, только если сервер подтвердил условия отбора."""
+
+        page = _search_page(0, total_pages=0, has_files=True)
+        page["_embedded"]["searchResult"]["_embedded"]["objects"] = []
+        archive = MagicMock()
+        archive.get_json.side_effect = [_search_configuration(has_files=True), page]
+
+        self.assertEqual(
+            collect_metadata(archive, max_pages=0, page_size=1, has_files=True),
+            0,
+        )
+        self.assertEqual(archive.get_json.call_count, 2)
+
+    def test_missing_file_filter_stops_before_search(self) -> None:
+        """Без объявленного фильтра файлов нельзя запрашивать неподтверждённую выборку."""
+
+        archive = MagicMock()
+        archive.get_json.return_value = _search_configuration()
+
+        with self.assertRaises(ValueError):
+            collect_metadata(archive, has_files=True)
+
+        archive.get_json.assert_called_once_with(f"{API_BASE}/discover/search")
+
+    def test_language_filter_cannot_replace_file_filter(self) -> None:
+        """Одно имя нельзя одновременно использовать для отбора по языку и файлам."""
+
+        archive = MagicMock()
+
+        with self.assertRaises(ValueError):
+            collect_metadata(
+                archive,
+                language_filter="has_content_in_original_bundle",
+                has_files=True,
+            )
+
+        archive.get_json.assert_not_called()
+
+    def test_unsupported_file_filter_operator_stops_before_search(self) -> None:
+        """Для фильтра файлов требуется equals, а не любой объявленный оператор."""
+
+        operator_variants = (None, [], [{"operator": "contains"}], ["equals"])
+
+        for operators in operator_variants:
+            with self.subTest(operators=operators):
+                configuration = _search_configuration(has_files=True)
+                configuration["filters"][1]["operators"] = operators
+                archive = MagicMock()
+                archive.get_json.return_value = configuration
+
+                with self.assertRaises(ValueError):
+                    collect_metadata(archive, has_files=True)
+
+                archive.get_json.assert_called_once_with(f"{API_BASE}/discover/search")
+
+    def test_missing_applied_file_filter_is_rejected(self) -> None:
+        """Одного подтверждения языка недостаточно для выборки карточек с файлами."""
+
+        archive = MagicMock()
+        archive.get_json.side_effect = [
+            _search_configuration(has_files=True),
+            _search_page(0, total_pages=1),
+        ]
+
+        with self.assertRaises(ValueError):
+            collect_metadata(archive, page_size=1, has_files=True)
+
+        self.assertEqual(archive.get_json.call_count, 2)
+
+    def test_incorrect_applied_file_filter_is_rejected(self) -> None:
+        """Подтверждение файлов должно содержать точное имя, оператор и строку true."""
+
+        invalid_fields = (
+            ("filter", "has_content"),
+            ("operator", "contains"),
+            ("value", "false"),
+            ("value", True),
+            ("value", None),
+        )
+
+        for field, value in invalid_fields:
+            with self.subTest(field=field, value=value):
+                page = _search_page(0, total_pages=1, has_files=True)
+                page["appliedFilters"][1][field] = value
+                archive = MagicMock()
+                archive.get_json.side_effect = [_search_configuration(has_files=True), page]
+
+                with self.assertRaises(ValueError):
+                    collect_metadata(archive, page_size=1, has_files=True)
+
+                self.assertEqual(archive.get_json.call_count, 2)
+
+    def test_later_page_must_confirm_file_filter(self) -> None:
+        """Первая корректная страница не освобождает следующие от проверки фильтров."""
+
+        archive = MagicMock()
+        archive.get_json.side_effect = [
+            _search_configuration(has_files=True),
+            _search_page(0, next_url=_search_url(1, has_files=True), has_files=True),
+            _search_page(1),
+        ]
+
+        with self.assertRaises(ValueError):
+            collect_metadata(archive, max_pages=0, page_size=1, has_files=True)
+
+        self.assertEqual(archive.get_json.call_count, 3)
+
+    def test_file_filter_does_not_replace_language_check(self) -> None:
+        """Подтверждённый отбор по файлам не должен отменять проверку русского языка."""
+
+        page = _search_page(0, total_pages=1, has_files=True)
+        page["appliedFilters"][0]["value"] = "en"
+        archive = MagicMock()
+        archive.get_json.side_effect = [_search_configuration(has_files=True), page]
+
+        with self.assertRaises(ValueError):
+            collect_metadata(archive, page_size=1, has_files=True)
+
+        self.assertEqual(archive.get_json.call_count, 2)
+
+    def test_next_link_cannot_drop_or_change_required_filters(self) -> None:
+        """Потерю или подмену условий в следующей ссылке нужно выявить до запроса."""
+
+        invalid_parameters = (
+            ("dsoType", None),
+            ("dsoType", ["collection"]),
+            ("f.Lang", None),
+            ("f.Lang", ["en,equals"]),
+            ("f.has_content_in_original_bundle", None),
+            ("f.has_content_in_original_bundle", ["false,equals"]),
+            ("f.has_content_in_original_bundle", ["true,contains"]),
+        )
+
+        for parameter, values in invalid_parameters:
+            with self.subTest(parameter=parameter, values=values):
+                parameters = parse_qs(urlsplit(_search_url(1, has_files=True)).query)
+
+                if values is None:
+                    del parameters[parameter]
+
+                else:
+                    parameters[parameter] = values
+
+                next_url = f"{API_BASE}/discover/search/objects?{urlencode(parameters, doseq=True)}"
+                archive = MagicMock()
+                archive.get_json.side_effect = [
+                    _search_configuration(has_files=True),
+                    _search_page(0, next_url=next_url, has_files=True),
+                ]
+
+                with self.assertRaises(ValueError):
+                    collect_metadata(archive, max_pages=0, page_size=1, has_files=True)
+
+                self.assertEqual(archive.get_json.call_count, 2)
+
+    def test_next_link_cannot_repeat_required_parameters(self) -> None:
+        """Даже одинаковые дубли условий отбора нельзя передавать серверу неоднозначно."""
+
+        required_parameters = {
+            "dsoType": "item",
+            "f.Lang": "ru,equals",
+            "f.has_content_in_original_bundle": "true,equals",
+        }
+
+        for parameter, value in required_parameters.items():
+            with self.subTest(parameter=parameter):
+                next_url = f"{_search_url(1, has_files=True)}&{urlencode({parameter: value})}"
+                archive = MagicMock()
+                archive.get_json.side_effect = [
+                    _search_configuration(has_files=True),
+                    _search_page(0, next_url=next_url, has_files=True),
+                ]
+
+                with self.assertRaises(ValueError):
+                    collect_metadata(archive, max_pages=0, page_size=1, has_files=True)
+
+                self.assertEqual(archive.get_json.call_count, 2)
+
+    def test_custom_language_filter_is_preserved(self) -> None:
+        """Проверки ссылок и ответов должны учитывать настроенное имя фильтра языка."""
+
+        language_filter = "Language"
+        configuration = _search_configuration(has_files=True)
+        configuration["filters"][0]["filter"] = language_filter
+        first_url = _search_url(0, has_files=True).replace("f.Lang=", "f.Language=")
+        next_url = _search_url(1, has_files=True).replace("f.Lang=", "f.Language=")
+        first_page = _search_page(0, next_url=next_url, has_files=True)
+        second_page = _search_page(1, has_files=True)
+
+        for page in (first_page, second_page):
+            page["appliedFilters"][0]["filter"] = language_filter
+
+        archive = MagicMock()
+        archive.get_json.side_effect = [configuration, first_page, second_page]
+
+        self.assertEqual(
+            collect_metadata(
+                archive,
+                max_pages=0,
+                page_size=1,
+                language_filter=language_filter,
+                has_files=True,
+            ),
+            2,
+        )
+        self.assertEqual(archive.get_json.call_args_list[1].args[0], first_url)
+        self.assertEqual(archive.get_json.call_args_list[2].args[0], next_url)
+
+
 class JinrDownloadCommandTests(unittest.TestCase):
     """Проверки кодов завершения команд без сетевых запросов и создания состояния."""
 
@@ -526,6 +1008,46 @@ class JinrDownloadCommandTests(unittest.TestCase):
             result = main(["probe"])
 
         self.assertEqual(result, 130)
+
+    def test_metadata_passes_file_filter_flag(self) -> None:
+        """Команда должна передать явный отбор по файлам и остальные ограничения."""
+
+        with (
+            patch("scripts.download_jinr.JinrApiClient"),
+            patch("scripts.download_jinr.JinrArchive") as archive_class,
+            patch("scripts.download_jinr.collect_metadata", return_value=2) as collect,
+            patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            result = main(["metadata", "--has-files", "--max-pages", "0", "--page-size", "100"])
+
+        self.assertEqual(result, 0)
+        collect.assert_called_once_with(
+            archive_class.return_value,
+            max_pages=0,
+            page_size=100,
+            language_filter="Lang",
+            has_files=True,
+        )
+
+    def test_metadata_does_not_filter_files_by_default(self) -> None:
+        """Без нового флага команда должна продолжать собирать метаданные без отбора файлов."""
+
+        with (
+            patch("scripts.download_jinr.JinrApiClient"),
+            patch("scripts.download_jinr.JinrArchive") as archive_class,
+            patch("scripts.download_jinr.collect_metadata", return_value=1) as collect,
+            patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            result = main(["metadata"])
+
+        self.assertEqual(result, 0)
+        collect.assert_called_once_with(
+            archive_class.return_value,
+            max_pages=1,
+            page_size=20,
+            language_filter="Lang",
+            has_files=False,
+        )
 
 
 if __name__ == "__main__":

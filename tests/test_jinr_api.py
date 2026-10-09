@@ -22,6 +22,8 @@ from src.collect.jinr_api import (
     _RejectRedirect,
 )
 
+PREPRINT_URL = "http://www1.jinr.ru/Preprints/2024/05(P11-2024-5).pdf"
+
 
 class _FakeClock:
     """Часы, в которых сон мгновенно перемещает оба счётчика вперёд."""
@@ -153,6 +155,131 @@ class JinrApiClientTests(unittest.TestCase):
 
         self.assertEqual(self.clock.sleeps, [60.0])
         self.assertEqual(self.opener.open.call_count, 2)
+
+    def test_api_and_preprints_share_delay_across_instances(self) -> None:
+        """Новый экземпляр не обходит минутную паузу при смене API на архив PDF и обратно."""
+
+        starts: list[float] = []
+
+        def open_response(*arguments: Any, **keywords: Any) -> MagicMock:
+            """Имитировать пять секунд передачи ответа с фиксацией начала запроса."""
+
+            starts.append(self.clock.time())
+            self.clock.advance(5.0)
+            return self.response
+
+        self.opener.open.side_effect = open_response
+        JinrApiClient(self.state_dir).get_response(DEFAULT_API_URL)
+        snapshot = JinrApiClient(self.state_dir).get_preprint_response(PREPRINT_URL)
+        JinrApiClient(self.state_dir).get_response(DEFAULT_API_URL)
+
+        self.assertEqual(starts, [1000.0, 1065.0, 1130.0])
+        self.assertEqual(self.clock.sleeps, [60.0, 60.0])
+        self.assertEqual(self._read_state()["next_request_at"], 1195.0)
+        self.assertEqual(snapshot.requested_url, PREPRINT_URL)
+        self.assertEqual(self.opener.open.call_args_list[1].args[0].full_url, PREPRINT_URL)
+
+    def test_preprint_request_uses_shared_lock_timeout_and_honest_user_agent(self) -> None:
+        """PDF использует тот же транспорт без маскировки браузером и отдельного лимитера."""
+
+        self.response.read.return_value = b"%PDF-1.7\nexample"
+        self.response.geturl.return_value = PREPRINT_URL
+        self.response.headers["Content-Type"] = "application/pdf"
+
+        with patch("src.collect.jinr_api.fcntl.flock") as flock:
+            snapshot = JinrApiClient(self.state_dir, timeout=12.0).get_preprint_response(PREPRINT_URL)
+
+        self.assertEqual(
+            [call.args[1] for call in flock.call_args_list],
+            [fcntl.LOCK_EX, fcntl.LOCK_UN],
+        )
+        request = self.opener.open.call_args.args[0]
+        self.assertTrue(request.get_header("User-agent").startswith("NIR-corpus-bot/"))
+        self.assertNotIn("Cookie", request.headers)
+        self.assertNotIn("Authorization", request.headers)
+        self.assertEqual(self.opener.open.call_args.kwargs["timeout"], 12.0)
+        self.assertEqual(snapshot.final_url, PREPRINT_URL)
+        self.assertEqual(snapshot.body, b"%PDF-1.7\nexample")
+
+    def test_preprint_errors_do_not_retry_and_delay_next_api_call(self) -> None:
+        """Ошибка PDF останавливает запрос и сохраняет паузу для следующего обращения к API."""
+
+        errors = (
+            self._http_error(403),
+            self._http_error(404),
+            urllib.error.URLError("DNS unavailable"),
+        )
+
+        for error in errors:
+            with self.subTest(error=error):
+                self.opener.open.reset_mock()
+                self.opener.open.side_effect = error
+
+                with self.assertRaisesRegex(JinrApiError, "Автоматического повтора нет"):
+                    JinrApiClient(self.state_dir).get_preprint_response(PREPRINT_URL)
+
+                self.opener.open.assert_called_once()
+                failure_finished_at = self.clock.time()
+                self.opener.open.side_effect = None
+                JinrApiClient(self.state_dir).get_response(DEFAULT_API_URL)
+
+                self.assertEqual(self.clock.time(), failure_finished_at + 60.0)
+
+    def test_preprint_retry_after_is_respected_by_next_api_instance(self) -> None:
+        """Retry-After архива препринтов сохраняется и действует на API после перезапуска."""
+
+        self.opener.open.side_effect = self._http_error(429, "180")
+
+        with self.assertRaisesRegex(JinrApiError, "HTTP 429"):
+            JinrApiClient(self.state_dir).get_preprint_response(PREPRINT_URL)
+
+        self.assertEqual(self._read_state()["next_request_at"], 1180.0)
+        self.opener.open.side_effect = None
+        JinrApiClient(self.state_dir).get_response(DEFAULT_API_URL)
+
+        self.assertEqual(self.clock.sleeps, [60.0, 60.0, 60.0])
+
+    def test_preprint_redirect_is_not_followed(self) -> None:
+        """Даже перенаправление PDF в пределах ОИЯИ не вызывает скрытого запроса."""
+
+        self.opener.open.side_effect = self._http_error(302)
+
+        with self.assertRaisesRegex(JinrApiError, "Перенаправление не выполнено"):
+            JinrApiClient(self.state_dir).get_preprint_response(PREPRINT_URL)
+
+        self.opener.open.assert_called_once()
+        self.assertEqual(self._read_state()["next_request_at"], 1060.0)
+
+    def test_preprint_response_size_and_completeness_are_checked(self) -> None:
+        """Опубликованные PDF ограничены тем же размером и проверкой Content-Length."""
+
+        self.response.read.return_value = b"12345"
+
+        with (
+            patch("src.collect.jinr_api.MAX_RESPONSE_BYTES", 4),
+            self.assertRaisesRegex(JinrApiError, "превышает лимит"),
+        ):
+            JinrApiClient(self.state_dir).get_preprint_response(PREPRINT_URL)
+
+        self.response.headers["Content-Length"] = "10"
+
+        with self.assertRaisesRegex(JinrApiError, "Неполный или некорректный ответ"):
+            JinrApiClient(self.state_dir).get_preprint_response(PREPRINT_URL)
+
+    def test_api_and_preprint_url_allowlists_remain_separate(self) -> None:
+        """Новый метод не расширяет разрешённые адреса API и проверяет PDF до запроса."""
+
+        client = JinrApiClient(self.state_dir)
+
+        with self.assertRaises(ValueError):
+            client.get_response(PREPRINT_URL)
+
+        for url in (DEFAULT_API_URL, PREPRINT_URL + "?", "https://other.example/paper.pdf"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                client.get_preprint_response(url)
+
+        self.opener.open.assert_not_called()
+        self.assertFalse((self.state_dir / "jinr_api_rate_limit.json").exists())
 
     def test_clock_jump_does_not_remove_in_process_delay(self) -> None:
         """Перевод календарных часов вперёд не сокращает паузу живого клиента."""

@@ -1,4 +1,4 @@
-"""Одиночные запросы к API ОИЯИ с общей сохраняемой паузой не менее минуты."""
+"""Запросы к API и опубликованным PDF ОИЯИ с общей сохраняемой паузой не менее минуты."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from .base import HttpResponseSnapshot, SAFE_RESPONSE_HEADERS, USER_AGENT
+from .jinr_preprints import validate_preprint_url
 
 DEFAULT_API_URL = "https://pubrepo-api.jinr.ru/server/api"
 MIN_DELAY_SECONDS = 60.0
@@ -136,9 +137,21 @@ class JinrApiClient:
         self._opener = urllib.request.build_opener(_RejectRedirect())
 
     def get_response(self, url: str) -> HttpResponseSnapshot:
-        """Получить один ответ, выдержав общую паузу после предыдущего обращения."""
+        """Получить один ответ API, выдержав общую паузу после предыдущего обращения."""
 
         _validate_url(url)
+
+        return self._get_rate_limited_response(url)
+
+    def get_preprint_response(self, url: str) -> HttpResponseSnapshot:
+        """Получить опубликованный PDF-препринт с той же паузой и блокировкой, что у API."""
+
+        validate_preprint_url(url)
+
+        return self._get_rate_limited_response(url)
+
+    def _get_rate_limited_response(self, url: str) -> HttpResponseSnapshot:
+        """Получить проверенный адрес под общей межпроцессной блокировкой запросов ОИЯИ."""
 
         try:
             self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -214,7 +227,7 @@ class JinrApiClient:
     def _request_once(self, url: str) -> HttpResponseSnapshot:
         """Прочитать ограниченный по размеру ответ без сохранения секретных заголовков."""
 
-        # Перед вызовом разрешены только HTTPS, один сервер и префикс его API.
+        # Публичные методы проверяют точный сервер и путь API либо PDF-препринта.
         request = urllib.request.Request(  # noqa: S310
             url,
             headers={
