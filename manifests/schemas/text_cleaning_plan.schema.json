@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ruphysbert:schema:text-cleaning-plan:v2",
+  "title": "Явный план консервативной очистки текстов",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "preprocessing_version", "documents"],
+  "properties": {
+    "schema_version": {"enum": ["text-cleaning-plan-v1", "text-cleaning-plan-v2"]},
+    "preprocessing_version": {"enum": ["text-clean-conservative-v1", "text-clean-conservative-v2", "text-clean-conservative-v3"]},
+    "documents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "work_id", "source_artifact_id", "pages_manifest_path",
+          "pages_manifest_sha256", "exclude_pages", "join_words"
+        ],
+        "properties": {
+          "work_id": {"type": "string", "minLength": 1},
+          "source_artifact_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "pages_manifest_path": {"type": "string", "minLength": 1},
+          "pages_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "exclude_pages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["page_number", "reason"],
+              "properties": {
+                "page_number": {"type": "integer", "minimum": 1},
+                "reason": {"type": "string", "pattern": "\\S"}
+              }
+            }
+          },
+          "exclude_lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["page_number", "line_number", "expected_text", "reason"],
+              "properties": {
+                "page_number": {"type": "integer", "minimum": 1},
+                "line_number": {"type": "integer", "minimum": 1},
+                "expected_text": {
+                  "type": "string",
+                  "pattern": "\\S",
+                  "not": {"pattern": "[\\r\\n]"}
+                },
+                "reason": {"type": "string", "pattern": "\\S"}
+              }
+            }
+          },
+          "join_words": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"preprocessing_version": {"const": "text-clean-conservative-v3"}}
+      },
+      "then": {
+        "properties": {
+          "schema_version": {"const": "text-cleaning-plan-v2"},
+          "documents": {"items": {"required": ["exclude_lines"]}}
+        }
+      },
+      "else": {
+        "properties": {
+          "schema_version": {"const": "text-cleaning-plan-v1"},
+          "documents": {"items": {"not": {"required": ["exclude_lines"]}}}
+        }
+      }
+    }
+  ]
+}
