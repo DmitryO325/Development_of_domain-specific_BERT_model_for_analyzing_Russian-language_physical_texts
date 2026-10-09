@@ -29,10 +29,20 @@
   "properties": {
     "schema_version": {"type": "string", "const": "rights-v1"},
     "created_at": {"type": "string", "format": "date-time"},
+    "effective_from": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Подтверждённое начало действия основания, независимо от даты внесения записи."
+    },
+    "effective_from_evidence_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Контрольная сумма свидетельства, подтверждающего начало действия основания."
+    },
     "rights_record_id": {"type": "string", "minLength": 1},
     "scope_type": {
       "type": "string",
-      "enum": ["source_group", "source", "journal", "work", "artifact"]
+      "enum": ["source_group", "source", "journal", "work", "artifact", "retrieval"]
     },
     "scope_id": {"type": "string", "minLength": 1},
     "operation": {
@@ -116,7 +126,40 @@
     },
     "supersedes_rights_record_id": {"type": ["string", "null"]}
   },
+  "dependentRequired": {
+    "effective_from": ["effective_from_evidence_sha256"],
+    "effective_from_evidence_sha256": ["effective_from"]
+  },
   "allOf": [
+    {
+      "if": {
+        "properties": {"scope_type": {"const": "retrieval"}},
+        "required": ["scope_type"]
+      },
+      "then": {
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Точный retrieval_id существующего события получения; наличие события проверяется на уровне реестров."
+          },
+          "operation": {"enum": ["acquisition", "storage"]}
+        }
+      }
+    },
+    {
+      "if": {"required": ["effective_from"]},
+      "then": {
+        "properties": {
+          "rights_evidence_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "conditions_satisfied_at": {"type": "null"},
+          "conditions_evidence_sha256": {"type": "null"}
+        }
+      }
+    },
     {
       "if": {
         "properties": {"acquisition_method": {"type": "null"}},

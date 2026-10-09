@@ -44,9 +44,25 @@
     },
     "source_group_id": {"type": "string", "minLength": 1},
     "source_id": {"type": "string", "minLength": 1},
+    "corpus_group_id": {
+      "description": "Явно одобренная смежная тематическая группа; не источник, жанр, рубрика ГРНТИ или допуск к обучению. Отсутствие поля не означает физическое ядро.",
+      "type": "string",
+      "enum": ["adjacent_experimental_computing", "adjacent_computational_methods"]
+    },
     "platform": {"type": ["string", "null"]},
-    "journal_id": {"type": "string", "minLength": 1},
-    "journal_title": {"type": "string", "minLength": 1},
+    "journal_id": {"type": ["string", "null"], "minLength": 1},
+    "journal_title": {"type": ["string", "null"], "minLength": 1},
+    "collection_title": {
+      "description": "Название научного сборника для отдельно проверенного полного материала или тезисов; не подменяет журнал.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "source_document_type": {
+      "description": "Исходный тип публикации в метаданных репозитория, сохранённый без замены на журнальную статью.",
+      "type": "string",
+      "const": "Book chapter"
+    },
     "canonical_url": {"type": "string", "format": "uri"},
     "doi": {"type": ["string", "null"]},
     "edn": {"type": ["string", "null"]},
@@ -64,6 +80,12 @@
         {"type": "null"}
       ]
     },
+    "published_year": {
+      "description": "Год публикации, если источник не сообщает полную дату; день и месяц не выдумываются.",
+      "type": ["integer", "null"],
+      "minimum": 1000,
+      "maximum": 9999
+    },
     "language": {"type": "string", "minLength": 2},
     "genre": {
       "type": "string",
@@ -71,6 +93,9 @@
         "research_article",
         "review_article",
         "short_communication",
+        "preprint",
+        "collection_paper",
+        "conference_abstract",
         "other"
       ]
     },
@@ -109,6 +134,48 @@
     }
   },
   "allOf": [
+    {
+      "if": {"required": ["corpus_group_id"]},
+      "then": {
+        "properties": {
+          "genre": {"enum": ["research_article", "review_article", "short_communication"]},
+          "eligibility_status": {"enum": ["pending", "rejected", "quarantined"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"genre": {"enum": ["preprint", "collection_paper", "conference_abstract"]}},
+        "required": ["genre"]
+      },
+      "else": {
+        "properties": {
+          "journal_id": {"type": "string", "minLength": 1},
+          "journal_title": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"genre": {"enum": ["collection_paper", "conference_abstract"]}},
+        "required": ["genre"]
+      },
+      "then": {
+        "required": ["collection_title", "source_document_type"],
+        "properties": {
+          "journal_id": {"type": "null"},
+          "journal_title": {"type": "null"}
+        }
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["collection_title"]},
+            {"required": ["source_document_type"]}
+          ]
+        }
+      }
+    },
     {
       "if": {
         "properties": {"eligibility_status": {"const": "eligible"}},

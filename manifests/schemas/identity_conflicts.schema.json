@@ -29,8 +29,11 @@
         "edn",
         "title",
         "published_at",
+        "published_year",
         "journal_id",
         "journal_title",
+        "collection_title",
+        "source_document_type",
         "canonical_url",
         "other"
       ]

@@ -54,6 +54,11 @@
     },
     "subject_id": {"type": "string", "minLength": 1},
     "decision_at": {"type": "string", "format": "date-time"},
+    "knowledge_cutoff_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Момент, до которого учитываются внесённые свидетельства при оценке операции."
+    },
     "context": {"$ref": "#/$defs/context"},
     "context_sha256": {"$ref": "#/$defs/sha256"},
     "rights_record_ids": {

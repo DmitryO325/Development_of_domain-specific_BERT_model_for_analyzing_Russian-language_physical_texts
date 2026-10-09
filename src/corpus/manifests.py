@@ -70,6 +70,7 @@ SCOPE_SPECIFICITY = {
     "source": 3,
     "work": 4,
     "artifact": 5,
+    "retrieval": 6,
 }
 
 
@@ -995,6 +996,8 @@ class ManifestStore:
             "published_at",
             "journal_id",
             "journal_title",
+            "collection_title",
+            "source_document_type",
             "canonical_url",
         )
 
@@ -1249,46 +1252,61 @@ class ManifestStore:
 
         scope_type = right["scope_type"]
 
-        if scope_type in {"work", "artifact", "source"}:
+        if scope_type in {"work", "artifact", "source", "retrieval"}:
             return scope_type, right["scope_id"]
 
         return "project", PROJECT_SUBJECT_ID
 
     @staticmethod
+    def _superseded_at(
+        records: dict[str, dict[str, Any]],
+        available: dict[str, dict[str, Any]],
+        previous_field: str,
+    ) -> set[str]:
+        """Учесть всю цепочку замены, не оживляя более старого предка."""
+
+        superseded: set[str] = set()
+
+        for record in available.values():
+            previous = record.get(previous_field)
+            visited: set[str] = set()
+
+            while previous is not None and previous not in visited:
+                visited.add(previous)
+                superseded.add(previous)
+                previous = records.get(previous, {}).get(previous_field)
+
+        return superseded
+
+    @classmethod
     def _active_condition_fulfilments(
+        cls,
         fulfilments: dict[str, dict[str, Any]],
         *,
         at: datetime | None = None,
+        known_at: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Выбрать действующие и неотозванные выполнения условий."""
 
         reference_time = at or datetime.now(timezone.utc)
-        superseded = {
-            item["supersedes_fulfilment_id"]
-            for item in fulfilments.values()
-            if item.get("supersedes_fulfilment_id")
-            and datetime.fromisoformat(
+        knowledge_time = known_at or reference_time
+        available = {
+            record_id: item
+            for record_id, item in fulfilments.items()
+            if datetime.fromisoformat(
                 item["created_at"].replace("Z", "+00:00")
+            ) <= knowledge_time
+            and datetime.fromisoformat(
+                item["satisfied_at"].replace("Z", "+00:00")
             ) <= reference_time
         }
+        superseded = cls._superseded_at(
+            fulfilments, available, "supersedes_fulfilment_id"
+        )
         active: list[dict[str, Any]] = []
 
-        for fulfilment_id, fulfilment in fulfilments.items():
+        for fulfilment_id, fulfilment in available.items():
             if fulfilment_id in superseded or fulfilment["status"] != "satisfied":
-                continue
-
-            created_at = datetime.fromisoformat(
-                fulfilment["created_at"].replace("Z", "+00:00")
-            )
-
-            if created_at > reference_time:
-                continue
-
-            satisfied_at = datetime.fromisoformat(
-                fulfilment["satisfied_at"].replace("Z", "+00:00")
-            )
-
-            if satisfied_at > reference_time:
                 continue
 
             expires_at = fulfilment.get("expires_at")
@@ -1365,6 +1383,9 @@ class ManifestStore:
         source_group_ids: set[str] | None = None,
     ) -> bool:
         """Проверить область права для конкретного события получения."""
+
+        if right["scope_type"] == "retrieval":
+            return right["scope_id"] == event["retrieval_id"]
 
         if artifact is not None and work is not None:
             return cls._rights_apply(right, work, artifact)
@@ -1459,11 +1480,15 @@ class ManifestStore:
         artifact: dict[str, Any] | None,
         *,
         at: datetime | None = None,
+        known_at: datetime | None = None,
         source_group_ids: set[str] | None = None,
     ) -> bool:
         """Проверить разрешение права для события и его точных условий."""
 
         reference_time = at or datetime.now(timezone.utc)
+        if not cls._right_is_known_and_effective(right, reference_time, known_at):
+            return False
+
         expires_at = right.get("rights_expires_at")
 
         if expires_at and date.fromisoformat(expires_at) < reference_time.date():
@@ -1475,7 +1500,9 @@ class ManifestStore:
         if right["status"] != "conditional":
             return False
 
-        active = cls._active_condition_fulfilments(fulfilments, at=reference_time)
+        active = cls._active_condition_fulfilments(
+            fulfilments, at=reference_time, known_at=known_at
+        )
 
         return all(
             any(
@@ -1502,10 +1529,13 @@ class ManifestStore:
         artifact: dict[str, Any],
         *,
         at: datetime | None = None,
+        known_at: datetime | None = None,
     ) -> bool:
         """Проверить каждое точное условие по отдельному журналу."""
 
-        active = cls._active_condition_fulfilments(fulfilments, at=at)
+        active = cls._active_condition_fulfilments(
+            fulfilments, at=at, known_at=known_at
+        )
 
         return all(
             any(
@@ -1532,9 +1562,8 @@ class ManifestStore:
     ) -> None:
         """Зафиксировать решения acquisition и storage для фактических операций."""
 
-        superseded_rights: set[str] = set()
         rights_errors: list[str] = []
-        superseded_rights = self._validate_rights_supersedes(rights, rights_errors)
+        self._validate_rights_supersedes(rights, rights_errors)
 
         if rights_errors:
             return
@@ -1590,15 +1619,12 @@ class ManifestStore:
                     retrieval_events=retrieval_events,
                 )
 
-                if operation == "acquisition" and acquisition_status == "retrieved":
-                    available_rights = self._rights_active_at(rights, decision_at)
-
-                else:
-                    available_rights = [
-                        right
-                        for right in rights.values()
-                        if right["rights_record_id"] not in superseded_rights
-                    ]
+                known_at = datetime.fromisoformat(
+                    artifact["updated_at"].replace("Z", "+00:00")
+                )
+                available_rights = self._rights_active_at(
+                    rights, decision_at, known_at=known_at
+                )
 
                 applicable = [
                     right
@@ -1651,6 +1677,7 @@ class ManifestStore:
                     for item in self._active_condition_fulfilments(
                         condition_fulfilments,
                         at=decision_at,
+                        known_at=known_at,
                     )
                     if item["rights_record_id"] in selected_rights
                     and self._condition_subject_applies(item, work, artifact)
@@ -1662,6 +1689,7 @@ class ManifestStore:
                         work,
                         artifact,
                         at=decision_at,
+                        known_at=known_at,
                     )
                     for right in controlling
                 )
@@ -1678,6 +1706,7 @@ class ManifestStore:
                 payload = {
                     "schema_version": "operation-decisions-v1",
                     "created_at": artifact["updated_at"],
+                    "knowledge_cutoff_at": artifact["updated_at"],
                     "decision_key": decision_key,
                     "operation": operation,
                     "derivative_scope": None,
@@ -1736,6 +1765,9 @@ class ManifestStore:
             retrieved_at = datetime.fromisoformat(
                 event["retrieved_at"].replace("Z", "+00:00")
             )
+            known_at = datetime.fromisoformat(
+                event["created_at"].replace("Z", "+00:00")
+            )
             operations = ["acquisition"]
 
             if event.get("response_path") is not None:
@@ -1743,7 +1775,7 @@ class ManifestStore:
 
             applicable = [
                 right
-                for right in self._rights_active_at(rights, retrieved_at)
+                for right in self._rights_active_at(rights, retrieved_at, known_at=known_at)
                 if self._right_applies_to_event(
                     right,
                     event,
@@ -1801,6 +1833,7 @@ class ManifestStore:
                     for item in self._active_condition_fulfilments(
                         condition_fulfilments,
                         at=decision_at,
+                        known_at=known_at,
                     )
                     if item["rights_record_id"] in selected_rights
                     and self._condition_subject_applies_to_event(
@@ -1819,6 +1852,7 @@ class ManifestStore:
                         work,
                         artifact,
                         at=decision_at,
+                        known_at=known_at,
                         source_group_ids=source_group_ids,
                     )
                     for right in controlling
@@ -1836,6 +1870,7 @@ class ManifestStore:
                 payload = {
                     "schema_version": "operation-decisions-v1",
                     "created_at": event["created_at"],
+                    "knowledge_cutoff_at": event["created_at"],
                     "decision_key": decision_key,
                     "operation": operation,
                     "derivative_scope": None,
@@ -2277,7 +2312,23 @@ class ManifestStore:
         works = records["works"]
         rights = records["rights"]
         artifacts = records["artifacts"]
-        superseded_rights = self._validate_rights_supersedes(rights, errors)
+        self._validate_rights_supersedes(rights, errors)
+
+        for right in rights.values():
+            if (
+                right["scope_type"] == "retrieval"
+                and right["scope_id"] not in records["retrieval_events"]
+            ):
+                errors.append(
+                    f"rights: {right['rights_record_id']} ссылается на "
+                    f"отсутствующее событие получения {right['scope_id']!r}"
+                )
+
+        reference_time = datetime.now(timezone.utc)
+        currently_active = {
+            right["rights_record_id"]: right
+            for right in self._rights_active_at(rights, reference_time, known_at=reference_time)
+        }
 
         by_artifact_id = {
             record["artifact_id"]: record
@@ -2402,14 +2453,13 @@ class ManifestStore:
             active_rights = [
                 item
                 for item in referenced_rights
-                if item["rights_record_id"] not in superseded_rights
+                if item["rights_record_id"] in currently_active
             ]
 
             all_active_applicable_rights = [
                 item
-                for item in rights.values()
-                if item["rights_record_id"] not in superseded_rights
-                and self._rights_apply(item, work, artifact)
+                for item in currently_active.values()
+                if self._rights_apply(item, work, artifact)
             ]
 
             if artifact["acquisition_status"] == "ready":
@@ -2581,6 +2631,18 @@ class ManifestStore:
         rights = records["rights"]
         fulfilments = records["condition_fulfilments"]
 
+        superseded_decisions = {
+            item["supersedes_decision_id"]
+            for item in records["operation_decisions"].values()
+            if item.get("supersedes_decision_id")
+        }
+        event_decisions = {
+            (item["subject_id"], item["operation"]): item
+            for item in records["operation_decisions"].values()
+            if item["subject_type"] == "retrieval"
+            and item["decision_id"] not in superseded_decisions
+        }
+
         for event in records["retrieval_events"].values():
             retrieval_id = event["retrieval_id"]
             context_type = event["request_context_type"]
@@ -2616,7 +2678,7 @@ class ManifestStore:
                     f"отсутствующий артефакт {context_id!r}"
                 )
 
-            elif context_type == "artifact" and not any(
+            elif context_type == "artifact" and context_artifact is not None and not any(
                 item["retrieval_id"] == retrieval_id
                 for item in context_artifact.get("retrievals", [])
             ):
@@ -2663,29 +2725,30 @@ class ManifestStore:
                 else:
                     referenced_rights.append(right)
 
-            rights_at_event = cls._rights_active_at(rights, retrieved_at)
-            all_active_applicable_rights = [
-                right
-                for right in rights_at_event
-                if cls._right_applies_to_event(
-                    right,
-                    event,
-                    work,
-                    artifact,
-                    source_group_ids=source_group_ids,
-                )
-            ]
-            referenced_ids = {
-                right["rights_record_id"]
-                for right in referenced_rights
-                if right in rights_at_event
-            }
             required_operations = ["acquisition"]
 
             if event.get("response_path") is not None:
                 required_operations.append("storage")
 
             for operation in required_operations:
+                # Исторический факт проверяем тем набором сведений, который
+                # был зафиксирован решением, а не всем известным сегодня.
+                decision = event_decisions.get((retrieval_id, operation), {})
+                cutoff = decision.get("knowledge_cutoff_at")
+                known_at = datetime.fromisoformat(cutoff.replace("Z", "+00:00")) if cutoff else None
+                rights_at_event = cls._rights_active_at(rights, retrieved_at, known_at=known_at)
+                all_active_applicable_rights = [
+                    right
+                    for right in rights_at_event
+                    if cls._right_applies_to_event(
+                        right, event, work, artifact, source_group_ids=source_group_ids
+                    )
+                ]
+                referenced_ids = {
+                    right["rights_record_id"]
+                    for right in referenced_rights
+                    if right in rights_at_event
+                }
                 controlling = cls._event_operation_rights(
                     all_active_applicable_rights,
                     operation=operation,
@@ -2721,6 +2784,7 @@ class ManifestStore:
                         work,
                         artifact,
                         at=retrieved_at,
+                        known_at=known_at,
                         source_group_ids=source_group_ids,
                     )
                     for right in controlling
@@ -2758,7 +2822,7 @@ class ManifestStore:
         reference_time = datetime.now(timezone.utc)
         applicable = [
             right
-            for right in cls._rights_active_at(rights, reference_time)
+            for right in cls._rights_active_at(rights, reference_time, known_at=reference_time)
             if cls._right_applies_to_event(
                 right,
                 event,
@@ -3092,6 +3156,15 @@ class ManifestStore:
             satisfied_at = datetime.fromisoformat(
                 fulfilment["satisfied_at"].replace("Z", "+00:00")
             )
+            recorded_at = datetime.fromisoformat(
+                fulfilment["created_at"].replace("Z", "+00:00")
+            )
+
+            if recorded_at > now or satisfied_at > recorded_at:
+                errors.append(
+                    f"condition_fulfilments: {fulfilment_id}: дата записи "
+                    "должна быть не раньше выполнения условия и не в будущем"
+                )
 
             if satisfied_at > now:
                 errors.append(
@@ -3415,7 +3488,15 @@ class ManifestStore:
         created_at = datetime.fromisoformat(
             decision["created_at"].replace("Z", "+00:00")
         )
+        cutoff = decision.get("knowledge_cutoff_at")
+        known_at = datetime.fromisoformat(cutoff.replace("Z", "+00:00")) if cutoff else None
         operation = decision["operation"]
+
+        if known_at is not None and (known_at != created_at or known_at < decision_at):
+            errors.append(
+                f"operation_decisions: {decision_id}: knowledge_cutoff_at должен "
+                "совпадать с created_at и быть не раньше операции"
+            )
 
         if decision_at > created_at:
             errors.append(
@@ -3469,7 +3550,7 @@ class ManifestStore:
             }
             applicable = [
                 right
-                for right in cls._rights_active_at(records["rights"], decision_at)
+                for right in cls._rights_active_at(records["rights"], decision_at, known_at=known_at)
                 if cls._rights_apply(right, work, artifact)
                 and (
                     operation != "derivatives_release"
@@ -3491,6 +3572,7 @@ class ManifestStore:
                     work,
                     artifact,
                     at=decision_at,
+                    known_at=known_at,
                 )
 
             def artifact_subject_applies(item: dict[str, Any]) -> bool:
@@ -3517,6 +3599,15 @@ class ManifestStore:
                     "без сохранённого ответа"
                 )
 
+            if known_at is not None and operation in {"acquisition", "storage"}:
+                retrieved_at = datetime.fromisoformat(event["retrieved_at"].replace("Z", "+00:00"))
+
+                if decision_at != retrieved_at:
+                    errors.append(
+                        f"operation_decisions: {decision_id}: момент операции "
+                        "не совпадает с фактическим HTTP-получением"
+                    )
+
             work, artifact = cls._event_context(
                 event,
                 records["works"],
@@ -3539,7 +3630,7 @@ class ManifestStore:
             }
             applicable = [
                 right
-                for right in cls._rights_active_at(records["rights"], decision_at)
+                for right in cls._rights_active_at(records["rights"], decision_at, known_at=known_at)
                 if cls._right_applies_to_event(
                     right,
                     event,
@@ -3568,6 +3659,7 @@ class ManifestStore:
                     work,
                     artifact,
                     at=decision_at,
+                    known_at=known_at,
                     source_group_ids=source_group_ids,
                 )
 
@@ -3632,6 +3724,7 @@ class ManifestStore:
         active_fulfilments = cls._active_condition_fulfilments(
             records["condition_fulfilments"],
             at=decision_at,
+            known_at=known_at,
         )
         expected_fulfilment_ids = {
             item["fulfilment_id"]
@@ -3647,24 +3740,36 @@ class ManifestStore:
             )
 
     @staticmethod
+    def _right_is_known_and_effective(
+        right: dict[str, Any],
+        at: datetime,
+        known_at: datetime | None = None,
+    ) -> bool:
+        """Разделить начало действия основания и момент появления сведений о нём."""
+
+        created_at = datetime.fromisoformat(right["created_at"].replace("Z", "+00:00"))
+        effective_from = datetime.fromisoformat(
+            right.get("effective_from", right["created_at"]).replace("Z", "+00:00")
+        )
+
+        return created_at <= (known_at or at) and effective_from <= at
+
+    @classmethod
     def _rights_active_at(
+        cls,
         rights: dict[str, dict[str, Any]],
         at: datetime,
+        *,
+        known_at: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Выбрать версии прав, действовавшие как записи в заданный момент."""
+        """Выбрать действовавшие права из известного на дату проверки набора."""
 
         available = {
             rights_id: right
             for rights_id, right in rights.items()
-            if datetime.fromisoformat(
-                right["created_at"].replace("Z", "+00:00")
-            ) <= at
+            if cls._right_is_known_and_effective(right, at, known_at)
         }
-        superseded = {
-            right["supersedes_rights_record_id"]
-            for right in available.values()
-            if right.get("supersedes_rights_record_id") in available
-        }
+        superseded = cls._superseded_at(rights, available, "supersedes_rights_record_id")
 
         return [
             right
@@ -3766,8 +3871,12 @@ class ManifestStore:
         artifact: dict[str, Any],
         *,
         at: datetime,
+        known_at: datetime | None = None,
     ) -> bool:
         """Проверить право и его условия в заданный момент истории."""
+
+        if not cls._right_is_known_and_effective(right, at, known_at):
+            return False
 
         expires_at = right.get("rights_expires_at")
 
@@ -3785,6 +3894,7 @@ class ManifestStore:
                 work,
                 artifact,
                 at=at,
+                known_at=known_at,
             )
         )
 
@@ -3855,6 +3965,13 @@ class ManifestStore:
             item
             for item in rights
             if item["operation"] == operation
+            and (
+                item["scope_type"] != "retrieval"
+                or (
+                    item["scope_id"] == event["retrieval_id"]
+                    and cls._right_matches_operation_context(item, event, operation)
+                )
+            )
             and (
                 operation != "acquisition"
                 or (
@@ -3991,11 +4108,11 @@ class ManifestStore:
     ) -> None:
         """Проверить уникальность идентификаторов и связи дублей работ."""
 
-        for field in ("doi", "edn", "canonical_url"):
+        for field_name in ("doi", "edn", "canonical_url"):
             owners: dict[str, str] = {}
 
             for work_id, work in works.items():
-                value = work.get(field)
+                value = work.get(field_name)
 
                 if not value:
                     continue
@@ -4005,7 +4122,7 @@ class ManifestStore:
 
                 if previous and previous != work_id:
                     errors.append(
-                        f"works: {field}={value!r} принадлежит одновременно "
+                        f"works: {field_name}={value!r} принадлежит одновременно "
                         f"{previous!r} "
                         f"и {work_id!r}"
                     )
@@ -4068,6 +4185,10 @@ class ManifestStore:
 
         scope_type = rights["scope_type"]
         scope_id = rights["scope_id"]
+
+        # Право на сохранённый ответ не разрешает работу с производным файлом.
+        if scope_type == "retrieval":
+            return False
 
         expected = {
             "source_group": work["source_group_id"],
@@ -4257,14 +4378,14 @@ class ManifestStore:
                     # перезаписывает уже существующий неизменяемый объект.
                     os.link(temporary_name, target)
 
-                except FileExistsError:
+                except FileExistsError as exception:
                     if not self._file_matches(
                         target, _BlobSpec(blob.sha256, len(blob.data))
                     ):
                         raise ManifestConflictError(
                             f"Путь {blob.relative_path} конкурентно занят "
                             "другими байтами"
-                        )
+                        ) from exception
 
                     unchanged += 1
                     continue
@@ -4423,6 +4544,17 @@ class ManifestStore:
                 raise ManifestError(
                     f"rights: {record_id}: rights_checked_at позже created_at"
                 )
+
+            effective_from = record.get("effective_from")
+            expires_at = record.get("rights_expires_at")
+
+            if effective_from and expires_at:
+                effective = datetime.fromisoformat(effective_from.replace("Z", "+00:00"))
+
+                if effective.date() > date.fromisoformat(expires_at):
+                    raise ManifestError(
+                        f"rights: {record_id}: effective_from позже окончания действия"
+                    )
 
             satisfied_at = record.get("conditions_satisfied_at")
 

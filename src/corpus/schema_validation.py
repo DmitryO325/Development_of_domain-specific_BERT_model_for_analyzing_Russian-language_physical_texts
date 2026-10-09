@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +31,32 @@ SCHEMA_FILES = {
     "frozen_manifest": "frozen_manifest.schema.json",
 }
 MAX_VALIDATION_ERRORS = 8
+MANIFEST_DATETIME_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"(?:\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+)
+
+
+def _is_manifest_datetime(value: object) -> bool:
+    """Проверить поддерживаемую реестрами метку RFC 3339 с часовым поясом."""
+
+    if not isinstance(value, str):
+        return True
+
+    # fromisoformat принимает также сокращённые и локальные даты, поэтому
+    # сначала ограничиваем синтаксис полным временем с явным часовым поясом.
+    # Строчные t/z и дополнительные секунды не поддерживаются кодом реестров.
+    if MANIFEST_DATETIME_PATTERN.fullmatch(value) is None:
+        return False
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    except ValueError:
+        return False
+
+    return parsed.utcoffset() is not None
 
 
 class SchemaCatalog:
@@ -79,7 +107,11 @@ class SchemaCatalog:
                 f"Некорректная JSON Schema {path}: {exception}"
             ) from exception
 
-        validator = Draft202012Validator(schema, format_checker=FormatChecker())
+        format_checker = FormatChecker()
+        # В jsonschema проверка date-time без необязательной зависимости
+        # может отсутствовать. Переопределяем только её, сохраняя остальные.
+        format_checker.checks("date-time")(_is_manifest_datetime)
+        validator = Draft202012Validator(schema, format_checker=format_checker)
         self._validators[kind] = validator
 
         return validator

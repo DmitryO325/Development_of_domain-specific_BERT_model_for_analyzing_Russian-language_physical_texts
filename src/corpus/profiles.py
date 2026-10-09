@@ -17,9 +17,10 @@ class SourceProfile:
     source_group_id: str
     source_id: str
     platform: str | None
-    journal_id: str
-    journal_title: str
+    journal_id: str | None
+    journal_title: str | None
     accepted_sources: tuple[str, ...]
+    automatic_selection: bool = True
 
     def matches(self, source: str, url: str) -> bool:
         """Проверить, соответствуют ли имя источника и URL этому профилю."""
@@ -51,6 +52,43 @@ class SourceProfile:
                 year, issue, letter = match.groups()
                 return f"article-{year}-{issue}-{letter.lower()}"
 
+        if self.key == "jinr_preprints":
+            parsed = urlsplit(url)
+            prefixes = {
+                "pubrepo.jinr.ru": "/entities/publication/",
+                "pubrepo-api.jinr.ru": "/server/api/core/items/",
+            }
+            prefix = prefixes.get((parsed.hostname or "").casefold())
+
+            if prefix is not None:
+                match = re.fullmatch(
+                    re.escape(prefix)
+                    + r"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})/?",
+                    parsed.path,
+                    re.IGNORECASE,
+                )
+
+                if match:
+                    return match.group(1).lower()
+
+        if self.key in {"jinr_articles", "jinr_collections", "jinr_abstracts"}:
+            parsed = urlsplit(url)
+            item_prefixes = {
+                "pubrepo.jinr.ru": ("/items/", "/entities/publication/"),
+                "pubrepo-api.jinr.ru": ("/server/api/core/items/",),
+            }
+
+            for prefix in item_prefixes.get((parsed.hostname or "").casefold(), ()):
+                match = re.fullmatch(
+                    re.escape(prefix)
+                    + r"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})/?",
+                    parsed.path,
+                    re.IGNORECASE,
+                )
+
+                if match:
+                    return match.group(1).lower()
+
         return
 
 
@@ -73,6 +111,54 @@ SOURCE_PROFILES: dict[str, SourceProfile] = {
         journal_id="quantum_electronics_ru",
         journal_title="Квантовая электроника",
         accepted_sources=("quantum-electronics.ru", "www.quantum-electronics.ru"),
+    ),
+
+    "jinr_preprints": SourceProfile(
+        key="jinr_preprints",
+        source_group_id="F04_JINR_REPOSITORY",
+        source_id="F04_JINR_PREPRINTS_RU",
+        platform="pubrepo.jinr.ru",
+        journal_id=None,
+        journal_title=None,
+        accepted_sources=("pubrepo.jinr.ru", "pubrepo-api.jinr.ru", "www1.jinr.ru"),
+        # Репозиторий содержит и журнальные статьи: одного домена недостаточно.
+        automatic_selection=False,
+    ),
+
+    "jinr_articles": SourceProfile(
+        key="jinr_articles",
+        source_group_id="F04_JINR_REPOSITORY",
+        source_id="F04_JINR_ARTICLES_RU",
+        platform="pubrepo.jinr.ru",
+        journal_id=None,
+        journal_title=None,
+        accepted_sources=("pubrepo.jinr.ru", "pubrepo-api.jinr.ru"),
+        # Тип Article и журнал проверяются по конкретной карточке репозитория.
+        automatic_selection=False,
+    ),
+
+    "jinr_collections": SourceProfile(
+        key="jinr_collections",
+        source_group_id="F04_JINR_REPOSITORY",
+        source_id="F04_JINR_COLLECTIONS_RU",
+        platform="pubrepo.jinr.ru",
+        journal_id=None,
+        journal_title=None,
+        accepted_sources=("pubrepo.jinr.ru", "pubrepo-api.jinr.ru"),
+        # Book chapter не отличает полную работу от тезисов: нужна проверка PDF.
+        automatic_selection=False,
+    ),
+
+    "jinr_abstracts": SourceProfile(
+        key="jinr_abstracts",
+        source_group_id="F04_JINR_REPOSITORY",
+        source_id="F04_JINR_ABSTRACTS_RU",
+        platform="pubrepo.jinr.ru",
+        journal_id=None,
+        journal_title=None,
+        accepted_sources=("pubrepo.jinr.ru", "pubrepo-api.jinr.ru"),
+        # Домен и Book chapter не подтверждают тезисы: нужна отдельная проверка.
+        automatic_selection=False,
     ),
 }
 
@@ -100,7 +186,7 @@ def get_source_profile(name: str, *, source: str = "", url: str = "") -> SourceP
     matches = [
         profile
         for profile in SOURCE_PROFILES.values()
-        if profile.matches(source, url)
+        if profile.automatic_selection and profile.matches(source, url)
     ]
 
     if len(matches) != 1:

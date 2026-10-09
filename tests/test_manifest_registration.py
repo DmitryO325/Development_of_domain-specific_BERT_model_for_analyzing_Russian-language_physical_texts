@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import tempfile
 import unittest
 
@@ -14,6 +15,7 @@ from src.corpus.manifests import ManifestConflictError, ManifestPlan, ManifestSt
 from src.corpus.profiles import get_source_profile
 from src.corpus.registration import (
     RegistrationOptions,
+    _merge_retrievals,
     plan_document,
     reconcile_document_plan,
     resolve_collection_rights,
@@ -797,6 +799,58 @@ class ManifestRegistrationTests(unittest.TestCase):
 
         with self.assertRaises(ManifestConflictError):
             reconcile_document_plan(self.store, candidate)
+
+
+class RetrievalMergeTests(unittest.TestCase):
+    """Проверки порядка, независимости копий и конфликтов событий получения."""
+
+    def test_repeat_preserves_existing_order(self) -> None:
+        """Точные повторы не переставляют уже сохранённые события."""
+
+        existing = [{"retrieval_id": "retrieval-z"}, {"retrieval_id": "retrieval-a"}]
+
+        for candidate in ([], existing, list(reversed(existing))):
+            with self.subTest(candidate=candidate):
+                self.assertEqual(_merge_retrievals(existing, candidate), existing)
+
+    def test_new_events_append_once_without_shared_mutable_values(self) -> None:
+        """Новые события дописываются один раз, а результат не меняет исходные данные."""
+
+        existing = [{"retrieval_id": "retrieval-z", "details": {"value": "old"}}]
+        first_new = {"retrieval_id": "retrieval-b", "details": {"value": "first"}}
+        second_new = {"retrieval_id": "retrieval-a", "details": {"value": "second"}}
+        candidate = [first_new, existing[0], second_new, first_new]
+        original_existing = copy.deepcopy(existing)
+        original_candidate = copy.deepcopy(candidate)
+        result = _merge_retrievals(existing, candidate)
+
+        self.assertEqual(result, [existing[0], first_new, second_new])
+
+        for record in result:
+            record["details"]["value"] = "changed"
+
+        self.assertEqual(existing, original_existing)
+        self.assertEqual(candidate, original_candidate)
+
+    def test_conflicting_id_is_rejected_in_existing_or_new_events(self) -> None:
+        """Один ID с разными данными остаётся ошибкой независимо от происхождения."""
+
+        original = {"retrieval_id": "retrieval-a", "details": {"value": "original"}}
+        conflicting = {"retrieval_id": "retrieval-a", "details": {"value": "conflict"}}
+
+        for existing, candidate in (
+            ([original], [conflicting]),
+            ([], [original, conflicting]),
+        ):
+            with self.subTest(existing=existing):
+                original_existing = copy.deepcopy(existing)
+                original_candidate = copy.deepcopy(candidate)
+
+                with self.assertRaisesRegex(ManifestConflictError, "имеет разные проекции"):
+                    _merge_retrievals(existing, candidate)
+
+                self.assertEqual(existing, original_existing)
+                self.assertEqual(candidate, original_candidate)
 
 
 if __name__ == "__main__":

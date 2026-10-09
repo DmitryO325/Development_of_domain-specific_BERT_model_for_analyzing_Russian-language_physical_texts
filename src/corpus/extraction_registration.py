@@ -403,7 +403,7 @@ def _merge_retrievals(
     existing: list[dict[str, Any]],
     candidate: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Объединить проекции получений и выявить конфликт одного ID."""
+    """Сохранить порядок получений, дописать новые и выявить конфликты ID."""
 
     result = copy.deepcopy(existing)
     by_id = {record["retrieval_id"]: record for record in result}
@@ -421,7 +421,8 @@ def _merge_retrievals(
             result.append(copied_record)
             by_id[record["retrieval_id"]] = copied_record
 
-    return sorted(result, key=lambda record: record["retrieval_id"])
+    # Перестановка прежних событий создала бы лишнюю ревизию при повторном импорте.
+    return result
 
 
 def _ordered_union(existing: list[str], candidate: list[str]) -> list[str]:

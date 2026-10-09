@@ -54,8 +54,11 @@ IDENTITY_CONFLICT_FIELDS = {
     "edn",
     "title",
     "published_at",
+    "published_year",
     "journal_id",
     "journal_title",
+    "collection_title",
+    "source_document_type",
 }
 LIST_WORK_FIELDS = {
     "work_aliases",
@@ -190,7 +193,6 @@ def plan_document(
 
     text_bytes = document.text.encode("utf-8")
     text_sha256 = sha256_bytes(text_bytes)
-    text_artifact_id = f"sha256:{text_sha256}"
     text_artifact_record_id = _artifact_record_id(text_sha256)
     response_sha256 = sha256_bytes(response.body) if response is not None else None
     response_artifact_record_id = (
@@ -461,23 +463,18 @@ def resolve_collection_rights(
             f"В реестре rights отсутствуют явно указанные записи: {missing}"
         )
 
-    superseded_ids = {
-        record["supersedes_rights_record_id"]
-        for record in rights.values()
-        if record.get("supersedes_rights_record_id")
-    }
+    now = datetime.now(timezone.utc)
+    active_rights = ManifestStore._rights_active_at(rights, at=now, known_at=now)
     applicable = [
         record
-        for record_id, record in rights.items()
-        if record_id not in superseded_ids
-        and _right_applies_to_source(record, profile)
+        for record in active_rights
+        if _right_applies_to_source(record, profile)
     ]
 
     _reject_known_specific_blocks(
         store,
         profile,
-        rights=list(rights.values()),
-        superseded_ids=superseded_ids,
+        rights=active_rights,
         acquisition_method=acquisition_method,
         acquisition_scope=acquisition_scope,
     )
@@ -559,17 +556,11 @@ def _reject_known_specific_blocks(
     profile: SourceProfile,
     *,
     rights: list[dict[str, Any]],
-    superseded_ids: set[str],
     acquisition_method: str,
     acquisition_scope: str,
 ) -> None:
     """Отклонить обход, если известный объект имеет более узкий запрет."""
 
-    active_rights = [
-        right
-        for right in rights
-        if right["rights_record_id"] not in superseded_ids
-    ]
     works = [
         work
         for work in store.records("works")
@@ -589,7 +580,7 @@ def _reject_known_specific_blocks(
         for artifact in contexts:
             for operation in ("acquisition", "storage"):
                 controlling = _controlling_known_rights(
-                    active_rights,
+                    rights,
                     work=work,
                     artifact=artifact,
                     operation=operation,
@@ -680,6 +671,11 @@ def _right_applies_to_known_target(
 
     scope_type = right["scope_type"]
     scope_id = right["scope_id"]
+
+    # Разрешение на уже полученный ответ не относится к будущему запросу.
+    if scope_type == "retrieval":
+        return False
+
     expected = {
         "source_group": work["source_group_id"],
         "source": work["source_id"],
@@ -708,6 +704,11 @@ def _known_right_permits(
 ) -> bool:
     """Проверить узкое право и его условия до сетевого обхода."""
 
+    now = datetime.now(timezone.utc)
+
+    if not ManifestStore._right_is_known_and_effective(right, now, now):
+        return False
+
     expires_at = right.get("rights_expires_at")
 
     if expires_at and date.fromisoformat(expires_at) < date.today():
@@ -719,10 +720,7 @@ def _known_right_permits(
     if right["status"] != "conditional":
         return False
 
-    if (
-        right.get("conditions_satisfied_at")
-        and right.get("conditions_evidence_sha256")
-    ):
+    if _legacy_conditions_permit(store, right, now):
         return True
 
     active = _active_condition_fulfilments(store)
@@ -746,33 +744,36 @@ def _known_right_permits(
 def _active_condition_fulfilments(store: ManifestStore) -> list[dict[str, Any]]:
     """Вернуть действующие незаменённые выполнения условий."""
 
-    fulfilments = store.records("condition_fulfilments")
-    superseded_ids = {
-        record["supersedes_fulfilment_id"]
-        for record in fulfilments
-        if record.get("supersedes_fulfilment_id")
+    fulfilments = {
+        record["fulfilment_id"]: record
+        for record in store.records("condition_fulfilments")
     }
     now = datetime.now(timezone.utc)
-    active: list[dict[str, Any]] = []
 
-    for fulfilment in fulfilments:
-        if (
-            fulfilment["fulfilment_id"] in superseded_ids
-            or fulfilment["status"] != "satisfied"
-            or datetime.fromisoformat(
-                fulfilment["satisfied_at"].replace("Z", "+00:00")
-            ) > now
-        ):
-            continue
+    return ManifestStore._active_condition_fulfilments(
+        fulfilments, at=now, known_at=now
+    )
 
-        expires = fulfilment.get("expires_at")
 
-        if expires and datetime.fromisoformat(expires.replace("Z", "+00:00")) < now:
-            continue
+def _legacy_conditions_permit(
+    store: ManifestStore,
+    right: dict[str, Any],
+    now: datetime,
+) -> bool:
+    """Применить старые поля лишь до появления отдельной истории условий."""
 
-        active.append(fulfilment)
+    satisfied_at = right.get("conditions_satisfied_at")
 
-    return active
+    if not satisfied_at or not right.get("conditions_evidence_sha256"):
+        return False
+
+    if datetime.fromisoformat(satisfied_at.replace("Z", "+00:00")) > now:
+        return False
+
+    return not any(
+        record["rights_record_id"] == right["rights_record_id"]
+        for record in store.records("condition_fulfilments")
+    )
 
 
 def _fulfilment_applies_to_known_target(
@@ -859,6 +860,11 @@ def _source_right_permits(
 ) -> bool:
     """Проверить статус, срок и точные условия одного права источника."""
 
+    now = datetime.now(timezone.utc)
+
+    if not ManifestStore._right_is_known_and_effective(right, now, now):
+        return False
+
     expires_at = right.get("rights_expires_at")
 
     if expires_at and date.fromisoformat(expires_at) < date.today():
@@ -870,47 +876,15 @@ def _source_right_permits(
     if right["status"] != "conditional":
         return False
 
-    if (
-        right.get("conditions_satisfied_at")
-        and right.get("conditions_evidence_sha256")
-    ):
+    if _legacy_conditions_permit(store, right, now):
         return True
 
-    fulfilments = store.records("condition_fulfilments")
-    superseded_ids = {
-        record["supersedes_fulfilment_id"]
-        for record in fulfilments
-        if record.get("supersedes_fulfilment_id")
-    }
-    now = datetime.now(timezone.utc)
-    active = []
-
-    for fulfilment in fulfilments:
-        if (
-            fulfilment["fulfilment_id"] in superseded_ids
-            or fulfilment["status"] != "satisfied"
-            or fulfilment["rights_record_id"] != right["rights_record_id"]
-        ):
-            continue
-
-        expires = fulfilment.get("expires_at")
-        satisfied_at = datetime.fromisoformat(
-            fulfilment["satisfied_at"].replace("Z", "+00:00")
-        )
-
-        if satisfied_at > now:
-            continue
-
-        if expires:
-            expires_at_value = datetime.fromisoformat(
-                expires.replace("Z", "+00:00")
-            )
-
-            if expires_at_value < now:
-                continue
-
-        if _fulfilment_applies_to_source(fulfilment, profile):
-            active.append(fulfilment)
+    active = [
+        fulfilment
+        for fulfilment in _active_condition_fulfilments(store)
+        if fulfilment["rights_record_id"] == right["rights_record_id"]
+        and _fulfilment_applies_to_source(fulfilment, profile)
+    ]
 
     return all(
         any(fulfilment["condition"] == condition for fulfilment in active)
@@ -1802,7 +1776,7 @@ def _compatible_value(field: str, left: Any, right: Any) -> bool:
     if field in {"edn", "journal_id"}:
         return str(left).casefold() == str(right).casefold()
 
-    if field in {"title", "journal_title"}:
+    if field in {"title", "journal_title", "collection_title"}:
         return normalize_identity_text(str(left)) == normalize_identity_text(str(right))
 
     if field == "canonical_url":
@@ -1987,10 +1961,11 @@ def _remap_plan_work_ids(
 
     for conflict in plan.identity_conflicts:
         conflict["work_id"] = mapping.get(conflict["work_id"], conflict["work_id"])
+        source_retrieval_ids: list[str] = conflict["source_retrieval_ids"]
         conflict["source_retrieval_ids"] = sorted(
             {
                 retrieval_id_mapping.get(retrieval_id, retrieval_id)
-                for retrieval_id in conflict["source_retrieval_ids"]
+                for retrieval_id in source_retrieval_ids
             }
         )
         conflict["conflict_id"] = _conflict_record_id(conflict)
@@ -2146,7 +2121,7 @@ def _merge_retrievals(
     existing: list[dict[str, Any]],
     candidate: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Объединить проекции событий и отклонить повторный ID с иными данными."""
+    """Сохранить порядок событий, дописать новые и отклонить конфликты ID."""
 
     result = copy.deepcopy(existing)
     by_id = {record["retrieval_id"]: record for record in result}
@@ -2163,7 +2138,8 @@ def _merge_retrievals(
             result.append(copy.deepcopy(record))
             by_id[record["retrieval_id"]] = record
 
-    return sorted(result, key=lambda record: record["retrieval_id"])
+    # Перестановка прежних событий создала бы лишнюю ревизию при повторном импорте.
+    return result
 
 
 def _deduplicate_history(
