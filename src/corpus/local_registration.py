@@ -262,6 +262,12 @@ def plan_local_file(
 def _validate_options(options: RegistrationOptions) -> None:
     """Отклонить параметры, которые искажают ручное получение PDF."""
 
+    if options.inventory_only:
+        raise ValueError(
+            "Инвентарный учёт inventory_only поддерживается только "
+            "при регистрации исходного HTTP-ответа"
+        )
+
     expected = {
         "content_role": "full_text",
         "acquisition_method": "manual_download",

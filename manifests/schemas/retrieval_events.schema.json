@@ -54,7 +54,6 @@
     "rights_record_ids": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},
-      "minItems": 1,
       "uniqueItems": true
     },
     "http_status": {
@@ -76,7 +75,8 @@
     "response_bytes": {"type": ["integer", "null"], "minimum": 0},
     "outcome": {
       "type": "string",
-      "enum": ["succeeded", "metadata_only", "failed"]
+      "enum": ["succeeded", "metadata_only", "recorded", "failed"],
+      "description": "recorded — инвентарная запись о полученном ответе, не подтверждающая разрешение на операцию."
     },
     "error_code": {"type": ["string", "null"], "minLength": 1},
     "error_detail": {"type": ["string", "null"], "minLength": 1}
@@ -88,6 +88,15 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {"outcome": {"const": "recorded"}},
+        "required": ["outcome"]
+      },
+      "else": {
+        "properties": {"rights_record_ids": {"minItems": 1}}
+      }
+    },
     {
       "if": {
         "properties": {"request_context_type": {"const": "source"}},
@@ -102,7 +111,7 @@
     },
     {
       "if": {
-        "properties": {"outcome": {"const": "succeeded"}},
+        "properties": {"outcome": {"enum": ["succeeded", "recorded"]}},
         "required": ["outcome"]
       },
       "then": {

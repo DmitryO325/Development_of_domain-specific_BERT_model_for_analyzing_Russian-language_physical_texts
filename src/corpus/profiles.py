@@ -100,7 +100,7 @@ SOURCE_PROFILES: dict[str, SourceProfile] = {
         platform="ufn.ru",
         journal_id="ufn_ru",
         journal_title="Успехи физических наук",
-        accepted_sources=("ufn.ru", "www.ufn.ru"),
+        accepted_sources=("ufn.ru", "www.ufn.ru", "ufn"),
     ),
 
     "quantum_electronics": SourceProfile(
@@ -110,7 +110,83 @@ SOURCE_PROFILES: dict[str, SourceProfile] = {
         platform="quantum-electronics.ru",
         journal_id="quantum_electronics_ru",
         journal_title="Квантовая электроника",
-        accepted_sources=("quantum-electronics.ru", "www.quantum-electronics.ru"),
+        accepted_sources=("quantum-electronics.ru", "www.quantum-electronics.ru", "quantum"),
+    ),
+
+    "jetp": SourceProfile(
+        key="jetp",
+        source_group_id="S04_JETP",
+        source_id="S04_JETP_RU",
+        platform="www.jetp.ras.ru",
+        journal_id="jetp_ru",
+        journal_title="Журнал экспериментальной и теоретической физики",
+        accepted_sources=("www.jetp.ras.ru", "jetp"),
+    ),
+
+    "jetp_letters": SourceProfile(
+        key="jetp_letters",
+        source_group_id="S02_JETP_LETTERS",
+        source_id="S02_JETP_LETTERS_RU",
+        platform="jetpletters.ru",
+        journal_id="jetp_letters_ru",
+        journal_title="Письма в ЖЭТФ",
+        accepted_sources=("jetpletters.ru", "jetp_letters"),
+    ),
+
+    "ioffe_ftt": SourceProfile(
+        key="ioffe_ftt",
+        source_group_id="S05_IOFFE",
+        source_id="S05_IOFFE_FTT_RU",
+        platform="journals.ioffe.ru",
+        journal_id="ioffe_ftt_ru",
+        journal_title="Физика твердого тела",
+        accepted_sources=("journals.ioffe.ru",),
+        # Один домен обслуживает пять журналов: нужен идентификатор из карточки.
+        automatic_selection=False,
+    ),
+
+    "ioffe_ftp": SourceProfile(
+        key="ioffe_ftp",
+        source_group_id="S05_IOFFE",
+        source_id="S05_IOFFE_FTP_RU",
+        platform="journals.ioffe.ru",
+        journal_id="ioffe_ftp_ru",
+        journal_title="Физика и техника полупроводников",
+        accepted_sources=("journals.ioffe.ru",),
+        automatic_selection=False,
+    ),
+
+    "ioffe_jtf": SourceProfile(
+        key="ioffe_jtf",
+        source_group_id="S05_IOFFE",
+        source_id="S05_IOFFE_JTF_RU",
+        platform="journals.ioffe.ru",
+        journal_id="ioffe_jtf_ru",
+        journal_title="Журнал технической физики",
+        accepted_sources=("journals.ioffe.ru",),
+        automatic_selection=False,
+    ),
+
+    "ioffe_pjtf": SourceProfile(
+        key="ioffe_pjtf",
+        source_group_id="S05_IOFFE",
+        source_id="S05_IOFFE_PJTF_RU",
+        platform="journals.ioffe.ru",
+        journal_id="ioffe_pjtf_ru",
+        journal_title="Письма в Журнал технической физики",
+        accepted_sources=("journals.ioffe.ru",),
+        automatic_selection=False,
+    ),
+
+    "ioffe_optics": SourceProfile(
+        key="ioffe_optics",
+        source_group_id="S05_IOFFE",
+        source_id="S05_IOFFE_OPTICS_RU",
+        platform="journals.ioffe.ru",
+        journal_id="ioffe_optics_ru",
+        journal_title="Оптика и спектроскопия",
+        accepted_sources=("journals.ioffe.ru",),
+        automatic_selection=False,
     ),
 
     "jinr_preprints": SourceProfile(

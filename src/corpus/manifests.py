@@ -883,6 +883,7 @@ class ManifestStore:
             combined["artifacts"],
             blob_specs,
             combined["retrieval_events"],
+            combined["rights"],
         )
 
         return _AnalyzedCommit(
@@ -1591,12 +1592,12 @@ class ManifestStore:
             acquisition_status = artifact["acquisition_status"]
             acquisition_was_recorded = (
                 previous_artifact is not None
-                and previous_artifact["acquisition_status"] == "retrieved"
-                and acquisition_status == "retrieved"
+                and acquisition_status in {"retrieved", "recorded"}
+                and previous_artifact["acquisition_status"] == acquisition_status
             )
 
             if (
-                acquisition_status in {"rights_blocked", "ready", "retrieved"}
+                acquisition_status in {"rights_blocked", "ready", "retrieved", "recorded"}
                 and not acquisition_was_recorded
             ):
                 operations.append("acquisition")
@@ -1637,7 +1638,7 @@ class ManifestStore:
                     artifact=artifact,
                 )
 
-                if not controlling:
+                if not controlling and acquisition_status != "recorded":
                     continue
 
                 context = {
@@ -1682,7 +1683,7 @@ class ManifestStore:
                     if item["rights_record_id"] in selected_rights
                     and self._condition_subject_applies(item, work, artifact)
                 ]
-                permitted = all(
+                permitted = bool(controlling) and all(
                     self._right_permits_at(
                         right,
                         condition_fulfilments,
@@ -1694,7 +1695,10 @@ class ManifestStore:
                     for right in controlling
                 )
 
-                if permitted:
+                if not controlling:
+                    status = "unknown"
+
+                elif permitted:
                     status = "allowed"
 
                 elif any(right["status"] == "conditional" for right in controlling):
@@ -1792,7 +1796,7 @@ class ManifestStore:
                     event=event,
                 )
 
-                if not controlling:
+                if not controlling and event["outcome"] != "recorded":
                     continue
 
                 context = {
@@ -1844,7 +1848,7 @@ class ManifestStore:
                         source_group_ids=source_group_ids,
                     )
                 ]
-                permitted = all(
+                permitted = bool(controlling) and all(
                     self._right_permits_event(
                         right,
                         condition_fulfilments,
@@ -1858,7 +1862,10 @@ class ManifestStore:
                     for right in controlling
                 )
 
-                if permitted:
+                if not controlling:
+                    status = "unknown"
+
+                elif permitted:
                     status = "allowed"
 
                 elif any(right["status"] == "conditional" for right in controlling):
@@ -1916,7 +1923,15 @@ class ManifestStore:
     ) -> datetime:
         """Вернуть момент фактической операции над артефактом."""
 
-        if operation == "acquisition" and artifact["acquisition_status"] == "retrieved":
+        if operation == "acquisition" and artifact["acquisition_status"] in {
+            "retrieved", "recorded",
+        }:
+            # Инвентарный факт не служит основанием для разрешённого получения.
+            permitted_outcomes = (
+                {"recorded"}
+                if artifact["acquisition_status"] == "recorded"
+                else {"succeeded", "metadata_only"}
+            )
             retrieval_times = [
                 datetime.fromisoformat(
                     retrieval["retrieved_at"].replace("Z", "+00:00")
@@ -1924,15 +1939,15 @@ class ManifestStore:
                 for retrieval in artifact["retrievals"]
                 if retrieval["retrieval_id"] in retrieval_events
                 and retrieval_events[retrieval["retrieval_id"]]["outcome"]
-                != "failed"
+                in permitted_outcomes
             ]
 
             if retrieval_times:
                 return min(retrieval_times)
 
             raise ManifestError(
-                "Артефакт со статусом retrieved не имеет состоявшегося "
-                "события получения"
+                f"Артефакт со статусом {artifact['acquisition_status']} "
+                "не имеет состоявшегося события получения нужного вида"
             )
 
         return datetime.fromisoformat(
@@ -2100,6 +2115,7 @@ class ManifestStore:
                 current["artifacts"],
                 {},
                 current["retrieval_events"],
+                current["rights"],
             )
 
         except ManifestError as exception:
@@ -2372,6 +2388,14 @@ class ManifestStore:
                     "к разным работам"
                 )
 
+            if parent_id in by_artifact_id and (
+                by_artifact_id[parent_id]["acquisition_status"] == "recorded"
+            ):
+                errors.append(
+                    f"artifacts: {record_id}: производные от recorded "
+                    "артефакта запрещены до разрешения использования"
+                )
+
             if (
                 artifact.get("extraction_version") == "legacy-import-v1"
                 and artifact.get("content_role") == "full_text"
@@ -2447,6 +2471,11 @@ class ManifestStore:
                 except ManifestError as exception:
                     errors.append(str(exception))
 
+            if artifact["acquisition_status"] == "recorded":
+                self._validate_recorded_artifact_origin(
+                    artifact, work, records["retrieval_events"], errors,
+                )
+
             if not referenced_rights and allow_unresolved_rights:
                 continue
 
@@ -2514,9 +2543,9 @@ class ManifestStore:
                         "разрешает операцию"
                     )
 
-            # Любой path означает факт локального хранения, даже если
-            # извлечение и обработка ещё не начаты.
-            if artifact.get("path") is not None:
+            # recorded учитывает наличие файла, но не утверждает допустимость
+            # хранения: определяющие права фиксируются отдельными решениями.
+            if artifact.get("path") is not None and artifact["acquisition_status"] != "recorded":
                 self._require_permitting_right(
                     active_rights,
                     all_active_applicable_rights,
@@ -2541,6 +2570,43 @@ class ManifestStore:
 
         if errors:
             raise ManifestError("\n".join(errors))
+
+    @staticmethod
+    def _validate_recorded_artifact_origin(
+        artifact: dict[str, Any],
+        work: dict[str, Any],
+        retrieval_events: dict[str, dict[str, Any]],
+        errors: list[str],
+    ) -> None:
+        """Требовать точное инвентарное событие для исходного файла."""
+
+        expected_contexts = {
+            "artifact": artifact["artifact_record_id"],
+            "work": artifact["work_id"],
+            "source": work["source_id"],
+        }
+
+        for retrieval in artifact["retrievals"]:
+            event = retrieval_events.get(retrieval["retrieval_id"])
+
+            if event is None or event["outcome"] != "recorded":
+                continue
+
+            if (
+                event["response_path"] == artifact["path"]
+                and event["response_sha256"] == artifact["sha256"]
+                and event["response_bytes"] == artifact["bytes"]
+                and event["acquisition_method"] == artifact["acquisition_method"]
+                and event["acquisition_scope"] == artifact["acquisition_scope"]
+                and event["request_context_id"]
+                == expected_contexts[event["request_context_type"]]
+            ):
+                return
+
+        errors.append(
+            f"artifacts: {artifact['artifact_record_id']}: recorded требует "
+            "события с теми же байтами, контекстом и режимом получения"
+        )
 
     @staticmethod
     def _validate_revision_histories(
@@ -2756,10 +2822,11 @@ class ManifestStore:
                 )
 
                 if not controlling:
-                    errors.append(
-                        f"retrieval_events: {retrieval_id} не имеет "
-                        f"применимой записи {operation}"
-                    )
+                    if event["outcome"] != "recorded":
+                        errors.append(
+                            f"retrieval_events: {retrieval_id} не имеет "
+                            f"применимой записи {operation}"
+                        )
                     continue
 
                 controlling_ids = {
@@ -2773,7 +2840,8 @@ class ManifestStore:
                     )
 
                 factual_operation = (
-                    operation == "storage" or event["outcome"] != "failed"
+                    event["outcome"] != "recorded"
+                    and (operation == "storage" or event["outcome"] != "failed")
                 )
 
                 if factual_operation and not all(
@@ -2794,7 +2862,7 @@ class ManifestStore:
                         f"{operation} не разрешена"
                     )
 
-            if event.get("response_path") is not None:
+            if event.get("response_path") is not None and event["outcome"] != "recorded":
                 cls._validate_current_retrieval_storage(
                     event,
                     work,
@@ -3299,7 +3367,7 @@ class ManifestStore:
                 if rights_id in rights
             }
 
-            if selected_rights and decision["rights_snapshot_sha256"] != sha256_bytes(
+            if decision["rights_snapshot_sha256"] != sha256_bytes(
                 _history_bytes(selected_rights)
             ):
                 errors.append(
@@ -3413,11 +3481,9 @@ class ManifestStore:
         for artifact_id, artifact in records["artifacts"].items():
             operations: list[str] = []
 
-            if artifact["acquisition_status"] in {
-                "rights_blocked",
-                "ready",
-                "retrieved",
-            }:
+            if (
+                artifact["acquisition_status"] in {"rights_blocked", "ready", "retrieved", "recorded"}
+            ):
                 operations.append("acquisition")
 
             if artifact.get("path") is not None:
@@ -3491,6 +3557,7 @@ class ManifestStore:
         cutoff = decision.get("knowledge_cutoff_at")
         known_at = datetime.fromisoformat(cutoff.replace("Z", "+00:00")) if cutoff else None
         operation = decision["operation"]
+        inventory_operation = False
 
         if known_at is not None and (known_at != created_at or known_at < decision_at):
             errors.append(
@@ -3536,6 +3603,11 @@ class ManifestStore:
             if work is None:
                 return
 
+            inventory_operation = (
+                artifact["acquisition_status"] == "recorded"
+                and operation in {"acquisition", "storage"}
+            )
+
             expected_context = {
                 "acquisition_method": (
                     artifact["acquisition_method"]
@@ -3562,6 +3634,14 @@ class ManifestStore:
                 operation=operation,
                 artifact=artifact,
             )
+
+            if inventory_operation and not {
+                right["rights_record_id"] for right in controlling
+            }.issubset(artifact["rights_record_ids"]):
+                errors.append(
+                    f"operation_decisions: {decision_id}: recorded артефакт "
+                    f"не ссылается на определяющие права {operation}"
+                )
 
             def artifact_permits(right: dict[str, Any]) -> bool:
                 """Проверить право решения для выбранного артефакта."""
@@ -3592,6 +3672,11 @@ class ManifestStore:
                     f"неизвестное получение {subject_id!r}"
                 )
                 return
+
+            inventory_operation = (
+                event["outcome"] == "recorded"
+                and operation in {"acquisition", "storage"}
+            )
 
             if operation == "storage" and event.get("response_path") is None:
                 errors.append(
@@ -3693,12 +3778,12 @@ class ManifestStore:
             right["rights_record_id"] for right in controlling
         }
 
-        if not controlling_ids:
+        if not controlling_ids and not inventory_operation:
             errors.append(
                 f"operation_decisions: {decision_id} не имеет определяющих прав"
             )
 
-        elif set(selected_rights) != controlling_ids:
+        if set(selected_rights) != controlling_ids:
             errors.append(
                 f"operation_decisions: {decision_id} содержит не тот набор "
                 "определяющих прав"
@@ -3706,7 +3791,10 @@ class ManifestStore:
 
         permitted = bool(controlling) and all(permits(right) for right in controlling)
 
-        if permitted:
+        if not controlling and inventory_operation:
+            expected_status = "unknown"
+
+        elif permitted:
             expected_status = "allowed"
 
         elif any(right["status"] == "conditional" for right in controlling):
@@ -4213,6 +4301,7 @@ class ManifestStore:
         artifacts: dict[str, dict[str, Any]],
         blob_specs: dict[str, _BlobSpec],
         retrieval_events: dict[str, dict[str, Any]],
+        rights: dict[str, dict[str, Any]],
     ) -> dict[str, int]:
         """Проверить файловые данные артефактов и событий получения."""
 
@@ -4290,11 +4379,49 @@ class ManifestStore:
             else:
                 self._validate_retrieval_file(event)
 
+        # Свидетельство регистрации или хранения TXT не является статьёй или HTTP-ответом.
+        # Его путь однозначно выводится из SHA в записи основания;
+        # произвольные несвязанные файлы по-прежнему не принимаются.
+        for right in rights.values():
+            if right["rights_record_id"].startswith("right:journal-batch:"):
+                evidence_directory = "journal_registration"
+
+            else:
+                continue
+
+            digest = right["rights_evidence_sha256"]
+            path_value = f"data/raw/{evidence_directory}/evidence/{digest}.json"
+
+            if path_value in payload_specs:
+                if payload_specs[path_value].sha256 != digest:
+                    raise ManifestError("Путь свидетельства партии занят другими байтами")
+
+                continue
+
+            spec = blob_specs.get(path_value)
+
+            if spec is not None:
+                if spec.sha256 != digest:
+                    raise ManifestError("SHA свидетельства партии не совпадает с основанием")
+
+            else:
+                target = self._resolve_data_path(path_value)
+
+                if not target.is_file():
+                    raise ManifestError(f"Отсутствует свидетельство партии: {path_value}")
+
+                spec = _BlobSpec(digest, target.stat().st_size)
+
+                if not self._file_matches(target, spec):
+                    raise ManifestError(f"Повреждено свидетельство партии: {path_value}")
+
+            payload_specs[path_value] = spec
+
         for path_value in blob_specs:
             if path_value not in payload_specs:
                 raise ManifestError(
                     f"blob {path_value} не связан ни с артефактом, "
-                    "ни с событием получения"
+                    "ни с событием получения или свидетельством основания партии"
                 )
 
         state = {"new": 0, "unchanged": 0}

@@ -514,6 +514,13 @@ def _selected_artifacts(
             )
 
         artifact = matches[0]
+
+        if artifact.get("acquisition_status") == "recorded":
+            raise ValueError(
+                f"PDF {relative_path!r} имеет статус recorded: "
+                "OCR QA запрещён до отдельного разрешения использования"
+            )
+
         file_path = _resolve_project_file(
             Path(relative_path),
             project_root=project_root,

@@ -165,6 +165,22 @@ class ExtractedTextRegistrationTests(unittest.TestCase):
         self.assertEqual(len(self.store.records("artifacts")), 2)
         self.assertTrue(self.store.audit().ok)
 
+    def test_recorded_parent_is_rejected_before_text_plan(self) -> None:
+        """Инвентарный исходник не допускается к созданию производного текста."""
+
+        parent = copy.deepcopy(self.parent_artifact)
+        parent["acquisition_status"] = "recorded"
+        parent["qa_status"] = "quarantined"
+
+        with self.assertRaisesRegex(ValueError, "recorded нельзя обрабатывать"):
+            plan_extracted_text(
+                parent,
+                "Физический текст.",
+                extraction_method="pdf",
+                extraction_version="pdf-text-test-v1",
+                extracted_at=EXTRACTED_AT,
+            )
+
     def test_ocr_metadata_records_engine_version(self) -> None:
         """OCR-текст должен хранить метод, движок и точную версию."""
 
@@ -184,6 +200,23 @@ class ExtractedTextRegistrationTests(unittest.TestCase):
         self.assertEqual(artifact["ocr_version"], "5.5.3")
 
         self.store.preflight([plan])
+
+    def test_unretrieved_parent_is_rejected(self) -> None:
+        """Наличие байтов само по себе не заменяет состоявшееся получение PDF."""
+
+        for status in ("ready", "discovered", "failed", "rights_blocked"):
+            with self.subTest(status=status):
+                parent = copy.deepcopy(self.parent_artifact)
+                parent["acquisition_status"] = status
+
+                with self.assertRaisesRegex(ValueError, "статус retrieved"):
+                    plan_extracted_text(
+                        parent,
+                        "Текст физической статьи.",
+                        extraction_method="pdf",
+                        extraction_version="scoped-text-v1",
+                        extracted_at=EXTRACTED_AT,
+                    )
 
     def test_repeated_plan_reuses_compatible_artifact(self) -> None:
         """Повторное извлечение тех же байтов не должно создавать ревизию."""

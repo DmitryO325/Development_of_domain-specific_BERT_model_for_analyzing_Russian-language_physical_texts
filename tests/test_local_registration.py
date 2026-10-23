@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -190,6 +191,17 @@ class LocalFileRegistrationTests(unittest.TestCase):
                 self.registration(relative_path="outside.pdf"),
                 self.profile,
                 self.options,
+                project_root=self.project_root,
+            )
+
+    def test_rejects_unsupported_inventory_mode(self) -> None:
+        """Ручной регистратор не должен молча менять смысл inventory_only."""
+
+        options = replace(self.options, inventory_only=True)
+
+        with self.assertRaisesRegex(ValueError, "inventory_only"):
+            plan_local_file(
+                self.registration(), self.profile, options,
                 project_root=self.project_root,
             )
 

@@ -164,6 +164,43 @@ class RebuildFromPdfTests(unittest.TestCase):
 
         return input_path
 
+    def test_recorded_pdf_is_rejected_before_extraction_and_page_export(self) -> None:
+        """Карантинный PDF не передаётся OCR и не создаёт постраничный экспорт."""
+
+        input_path = self.prepare_input(("a",), register_pdfs=False)
+        plan = plan_local_file(
+            self.registration("a"), self.profile, self.options,
+            project_root=self.project_root,
+        )
+        plan.artifacts[0]["acquisition_status"] = "recorded"
+        plan.artifacts[0]["qa_status"] = "quarantined"
+        plan.retrieval_events[0]["outcome"] = "recorded"
+        plan.works[0]["eligibility_status"] = "quarantined"
+        plan.works[0]["exclusion_reason"] = "Только инвентарный учёт."
+        self.store.commit(plan)
+        hashes = self.store.snapshot_hashes()
+        extractor = MagicMock()
+        page_exporter = MagicMock()
+        ocr_version_resolver = MagicMock()
+
+        with patch("sys.stdout", new=io.StringIO()), patch("sys.stderr", new=io.StringIO()):
+            result = run_extraction(
+                [str(input_path), "--export-pages"],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+                page_exporter=page_exporter,
+                ocr_version_resolver=ocr_version_resolver,
+            )
+
+        self.assertEqual(result, 1)
+        extractor.assert_not_called()
+        page_exporter.assert_not_called()
+        ocr_version_resolver.assert_not_called()
+        self.assertEqual(self.store.snapshot_hashes(), hashes)
+        self.assertFalse((self.project_root / "data" / "extracted").exists())
+        self.assertFalse((self.project_root / "data" / "qa").exists())
+
     def test_registered_pdfs_create_child_artifacts_and_report(self) -> None:
         """Две карточки должны создать два текста без новых событий загрузки."""
 

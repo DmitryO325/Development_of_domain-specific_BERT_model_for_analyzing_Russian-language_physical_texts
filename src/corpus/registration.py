@@ -110,6 +110,7 @@ class RegistrationOptions:
     extraction_version: str
     response_representation: str
     request_context_type: str
+    inventory_only: bool = False
 
     def __post_init__(self) -> None:
         """Нормализовать параметры и отклонить неподдерживаемые значения."""
@@ -140,7 +141,10 @@ class RegistrationOptions:
             dict.fromkeys(str(record_id).strip() for record_id in self.rights_record_ids)
         )
 
-        if not rights_record_ids or any(not record_id for record_id in rights_record_ids):
+        if type(self.inventory_only) is not bool:
+            raise ValueError("inventory_only должен быть логическим значением")
+
+        if (not rights_record_ids and not self.inventory_only) or any(not record_id for record_id in rights_record_ids):
             raise ValueError("rights_record_ids должен содержать непустые ID прав")
 
         extraction_method = self.extraction_method.strip()
@@ -166,9 +170,77 @@ def plan_document(
 ) -> ManifestPlan:
     """Построить детерминированный план регистрации одного документа."""
 
+    return _plan_registration(
+        document,
+        profile,
+        options,
+        collected_at,
+        response,
+        include_text=True,
+    )
+
+
+def plan_http_response(
+    document: Document,
+    profile: SourceProfile,
+    options: RegistrationOptions,
+    collected_at: str,
+    response: HttpResponseSnapshot,
+) -> ManifestPlan:
+    """
+    Зарегистрировать исходный HTTP-ответ без извлечённого текста.
+
+    Поле ``document.text`` не становится отдельным артефактом. Ответ,
+    общий для нескольких работ, сохраняется в контексте источника только
+    как событие получения и неизменяемый объект, без артефакта работы.
+    ``collected_at`` здесь означает время регистрации сохранённого ответа,
+    а фактическое время скачивания берётся только из ``response.retrieved_at``.
+    """
+
+    if not isinstance(response, HttpResponseSnapshot):
+        raise ValueError("Нужен сохранённый HttpResponseSnapshot исходного ответа")
+
+    if not 200 <= response.status_code < 300:
+        raise ValueError("Исходный HTTP-ответ должен иметь статус HTTP 2xx")
+
+    if not response.body:
+        raise ValueError("Тело исходного HTTP-ответа не может быть пустым")
+
+    if not document.source.strip():
+        raise ValueError("document.source не может быть пустым")
+
+    return _plan_registration(
+        document,
+        profile,
+        options,
+        collected_at,
+        response,
+        include_text=False,
+    )
+
+
+def _plan_registration(
+    document: Document,
+    profile: SourceProfile,
+    options: RegistrationOptions,
+    collected_at: str,
+    response: HttpResponseSnapshot | None,
+    *,
+    include_text: bool,
+) -> ManifestPlan:
+    """Собрать общий план происхождения с необязательным производным текстом."""
+
+    if options.inventory_only and (include_text or response is None):
+        raise ValueError("Инвентарный учёт допускает только исходный HTTP-ответ без обработки текста")
+
     timestamp = _normalize_timestamp(collected_at, field_name="collected_at")
     canonical_url = _canonical_http_url(document.url, field_name="document.url")
-    _validate_document(document, profile, canonical_url)
+    _validate_document(
+        document,
+        profile,
+        canonical_url,
+        require_text=include_text,
+    )
 
     _validate_response_provenance(
         document,
@@ -191,9 +263,11 @@ def plan_document(
         native_id=native_id,
     )
 
-    text_bytes = document.text.encode("utf-8")
-    text_sha256 = sha256_bytes(text_bytes)
-    text_artifact_record_id = _artifact_record_id(text_sha256)
+    text_bytes = document.text.encode("utf-8") if include_text else None
+    text_sha256 = sha256_bytes(text_bytes) if text_bytes is not None else None
+    text_artifact_record_id = (
+        _artifact_record_id(text_sha256) if text_sha256 is not None else None
+    )
     response_sha256 = sha256_bytes(response.body) if response is not None else None
     response_artifact_record_id = (
         _artifact_record_id(response_sha256) if response_sha256 is not None else None
@@ -218,6 +292,8 @@ def plan_document(
             else None
         ),
         response=response,
+        preserve_response_urls=not include_text,
+        separate_registration_time=not include_text,
     )
     retrieval = _retrieval_projection(retrieval_event)
     work = _build_work(
@@ -234,9 +310,11 @@ def plan_document(
     )
 
     normalized_native_id = normalize_native_id(native_id)
+    native_alias_value = (
+        f"{profile.source_id}:{normalized_native_id}" if normalized_native_id else None
+    )
 
-    if normalized_native_id:
-        native_alias_value = f"{profile.source_id}:{normalized_native_id}"
+    if native_alias_value:
         work["work_aliases"].append(
             f"source_native_id:{native_alias_value}"
         )
@@ -265,43 +343,48 @@ def plan_document(
             artifacts.append(response_artifact)
             parent_artifact_id = response_artifact["artifact_id"]
 
-    text_blob = _build_text_blob(
-        data=text_bytes,
-        digest=text_sha256,
-        extraction_version=options.extraction_version,
-    )
-    text_artifact = _build_text_artifact(
-        document=document,
-        work_id=identity.work_id,
-        options=options,
-        text_blob=text_blob,
-        retrieval=retrieval,
-        parent_artifact_id=parent_artifact_id,
-        timestamp=timestamp,
-    )
-
-    if not any(
-        artifact["artifact_id"] == text_artifact["artifact_id"]
-        for artifact in artifacts
-    ):
-        artifacts.append(text_artifact)
-        blobs.append(text_blob)
-
-    else:
-        artifacts[0] = _merge_same_payload_artifact(
-            artifacts[0],
-            text_artifact,
+    if text_bytes is not None and text_sha256 is not None:
+        text_blob = _build_text_blob(
+            data=text_bytes,
+            digest=text_sha256,
+            extraction_version=options.extraction_version,
         )
+        text_artifact = _build_text_artifact(
+            document=document,
+            work_id=identity.work_id,
+            options=options,
+            text_blob=text_blob,
+            retrieval=retrieval,
+            parent_artifact_id=parent_artifact_id,
+            timestamp=timestamp,
+        )
+
+        if not any(
+            artifact["artifact_id"] == text_artifact["artifact_id"]
+            for artifact in artifacts
+        ):
+            artifacts.append(text_artifact)
+            blobs.append(text_blob)
+
+        else:
+            artifacts[0] = _merge_same_payload_artifact(
+                artifacts[0],
+                text_artifact,
+            )
 
     work_aliases: list[dict[str, Any]] = []
 
-    if normalized_native_id:
+    if native_alias_value:
+        # Повторный импорт исходного ответа не является новым подтверждением
+        # алиаса: дата проверки остаётся связана с сохранённым HTTP-снимком.
+        alias_timestamp = timestamp if include_text else retrieval_event["retrieved_at"]
         work_aliases.append(
             _build_alias_record(
                 work_id=identity.work_id,
                 alias_type="source_native_id",
                 alias_value=native_alias_value,
-                timestamp=timestamp,
+                timestamp=alias_timestamp,
+                recorded_at=timestamp,
                 evidence_sha256=retrieval_event["response_metadata_sha256"],
                 retrieval_id=retrieval_event["retrieval_id"],
             )
@@ -327,6 +410,7 @@ def reconcile_document_plan(
     existing_works = store.records("works")
     existing_artifacts = store.records("artifacts")
     existing_aliases = store.records("work_aliases")
+    existing_retrieval_events = store.records("retrieval_events")
 
     work_id_mapping: dict[str, str] = {}
 
@@ -406,8 +490,14 @@ def reconcile_document_plan(
     _remap_plan_work_ids(reconciled, work_id_mapping)
     _drop_unmaterialized_alias_records(reconciled)
     _reconcile_artifacts(reconciled, existing_artifacts)
-    reconciled.work_aliases = _deduplicate_history(
+    reconciled.retrieval_events = _reconcile_recorded_history(
+        reconciled.retrieval_events,
+        existing_retrieval_events,
+        primary_field="retrieval_id",
+    )
+    reconciled.work_aliases = _reconcile_recorded_history(
         reconciled.work_aliases,
+        existing_aliases,
         primary_field="alias_record_id",
     )
     reconciled.identity_conflicts = _deduplicate_history(
@@ -920,13 +1010,15 @@ def _validate_document(
     document: Document,
     profile: SourceProfile,
     canonical_url: str,
+    *,
+    require_text: bool = True,
 ) -> None:
     """Проверить минимальные поля документа и соответствие профилю."""
 
     if not document.title.strip():
         raise ValueError("document.title не может быть пустым")
 
-    if not document.text:
+    if require_text and not document.text:
         raise ValueError("document.text не может быть пустым")
 
     if not profile.matches(document.source, canonical_url):
@@ -1134,8 +1226,11 @@ def _build_work(
         "udc_codes_raw": [],
         "publisher_section": _optional_string(document.section),
         "duplicate_of_work_id": None,
-        "eligibility_status": "pending",
-        "exclusion_reason": None,
+        "eligibility_status": "quarantined" if options.inventory_only else "pending",
+        "exclusion_reason": (
+            "Инвентарный учёт полученных материалов; права и допуск требуют отдельной проверки."
+            if options.inventory_only else None
+        ),
         "updated_at": timestamp,
     }
 
@@ -1146,7 +1241,7 @@ def _request_context_id(
     profile: SourceProfile,
     work_id: str,
     response_artifact_record_id: str | None,
-    text_artifact_record_id: str,
+    text_artifact_record_id: str | None,
 ) -> str:
     """Выбрать идентификатор сущности, в контексте которой сделан запрос."""
 
@@ -1156,7 +1251,12 @@ def _request_context_id(
     if context_type == "work":
         return work_id
 
-    return response_artifact_record_id or text_artifact_record_id
+    artifact_record_id = response_artifact_record_id or text_artifact_record_id
+
+    if artifact_record_id is None:
+        raise ValueError("Контекст artifact требует исходный ответ или текст")
+
+    return artifact_record_id
 
 
 def _build_retrieval_event(
@@ -1167,6 +1267,8 @@ def _build_retrieval_event(
     request_context_id: str,
     source_group_id: str | None,
     response: HttpResponseSnapshot | None,
+    preserve_response_urls: bool = False,
+    separate_registration_time: bool = False,
 ) -> tuple[dict[str, Any], PlannedBlob | None]:
     """Создать честное событие получения и необязательный HTTP-объект."""
 
@@ -1224,10 +1326,25 @@ def _build_retrieval_event(
         response.final_url,
         field_name="response.final_url",
     )
+
+    if preserve_response_urls:
+        # Канонизация нужна для сопоставления работ, но в свидетельстве
+        # получения нельзя терять фактический слеш или параметры запроса.
+        requested_url = response.requested_url
+        final_url = response.final_url
+
     retrieved_at = _normalize_timestamp(
         response.retrieved_at,
         field_name="response.retrieved_at",
     )
+
+    if separate_registration_time and (
+        datetime.fromisoformat(collected_at) < datetime.fromisoformat(retrieved_at)
+    ):
+        raise ValueError(
+            "collected_at не может быть раньше фактического времени "
+            "получения response.retrieved_at"
+        )
 
     if not 200 <= response.status_code <= 399:
         raise ValueError("Успешный HttpResponseSnapshot должен иметь HTTP 2xx или 3xx")
@@ -1260,13 +1377,13 @@ def _build_retrieval_event(
         "response_metadata_sha256": metadata_sha256,
         "response_sha256": response_sha256,
         "response_bytes": len(response.body),
-        "outcome": "succeeded",
+        "outcome": "recorded" if options.inventory_only else "succeeded",
     }
     retrieval_id = _deterministic_id("retrieval", event_core)
     event = {
         "schema_version": "retrieval-events-v1",
         "retrieval_id": retrieval_id,
-        "created_at": retrieved_at,
+        "created_at": collected_at if separate_registration_time else retrieved_at,
         "request_context_type": options.request_context_type,
         "request_context_id": request_context_id,
         "source_group_id": source_group_id,
@@ -1282,7 +1399,7 @@ def _build_retrieval_event(
         "response_path": response_path,
         "response_sha256": response_sha256,
         "response_bytes": len(response.body),
-        "outcome": "succeeded",
+        "outcome": "recorded" if options.inventory_only else "succeeded",
         "error_code": None,
         "error_detail": None,
     }
@@ -1518,9 +1635,9 @@ def _artifact_record(
         "label_leakage_audit_status": "not_checked",
         "acquisition_method": options.acquisition_method,
         "acquisition_scope": options.acquisition_scope,
-        "acquisition_status": "retrieved",
+        "acquisition_status": "recorded" if options.inventory_only else "retrieved",
         "extraction_status": extraction_status,
-        "qa_status": "not_evaluated",
+        "qa_status": "quarantined" if options.inventory_only else "not_evaluated",
         "processing_status": processing_status,
         "error_code": None,
         "error_detail": None,
@@ -1581,6 +1698,7 @@ def _build_alias_record(
     timestamp: str,
     evidence_sha256: str,
     retrieval_id: str | None,
+    recorded_at: str | None = None,
 ) -> dict[str, Any]:
     """Создать неизменяемую запись о проверенном псевдониме работы."""
 
@@ -1596,7 +1714,7 @@ def _build_alias_record(
     return {
         "schema_version": "work-aliases-v1",
         "alias_record_id": _deterministic_id("work-alias", payload),
-        "created_at": timestamp,
+        "created_at": recorded_at if recorded_at is not None else timestamp,
         **payload,
         "supersedes_alias_record_id": None,
     }
@@ -2084,9 +2202,15 @@ def _reconcile_artifacts(
             existing.get("retrievals", []),
             candidate.get("retrievals", []),
         )
+        # Новое инвентарное событие не меняет основания уже принятой копии:
+        # например, автоматическая загрузка не отменяет ручной пилот того же PDF.
+        inventory_origin_only = (
+            candidate.get("acquisition_status") == "recorded"
+            and existing.get("acquisition_status") != "recorded"
+        )
         rights_record_ids = _ordered_union(
             existing.get("rights_record_ids", []),
-            candidate.get("rights_record_ids", []),
+            [] if inventory_origin_only else candidate.get("rights_record_ids", []),
         )
         changed = False
 
@@ -2140,6 +2264,41 @@ def _merge_retrievals(
 
     # Перестановка прежних событий создала бы лишнюю ревизию при повторном импорте.
     return result
+
+
+def _reconcile_recorded_history(
+    records: list[dict[str, Any]],
+    existing_records: list[dict[str, Any]],
+    *,
+    primary_field: str,
+) -> list[dict[str, Any]]:
+    """Сохранить первую дату записи только у полностью совпадающих фактов."""
+
+    existing_by_id = {
+        record[primary_field]: record for record in existing_records
+    }
+    result: list[dict[str, Any]] = []
+
+    for record in records:
+        existing = existing_by_id.get(record[primary_field])
+
+        if existing is None:
+            result.append(record)
+            continue
+
+        candidate = {**record, "created_at": existing["created_at"]}
+
+        # Повторная регистрация не меняет дату знания о прежнем факте.
+        # Любое другое отличие под тем же ID остаётся конфликтом истории.
+        if candidate != existing:
+            raise ManifestConflictError(
+                f"{primary_field}={record[primary_field]!r} "
+                "не совпадает с сохранённой исторической записью"
+            )
+
+        result.append(copy.deepcopy(existing))
+
+    return _deduplicate_history(result, primary_field=primary_field)
 
 
 def _deduplicate_history(

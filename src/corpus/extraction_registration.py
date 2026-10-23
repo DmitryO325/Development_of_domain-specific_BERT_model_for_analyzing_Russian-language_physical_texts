@@ -229,6 +229,15 @@ def _validate_parent_artifact(artifact: dict[str, Any]) -> None:
     if artifact.get("representation") != "pdf":
         raise ValueError("Родительский артефакт должен иметь representation='pdf'")
 
+    if artifact.get("acquisition_status") == "recorded":
+        raise ValueError(
+            "Инвентарный PDF со статусом recorded нельзя обрабатывать "
+            "до отдельного разрешения использования"
+        )
+
+    if artifact.get("acquisition_status") != "retrieved":
+        raise ValueError("Родительский PDF должен иметь статус retrieved")
+
     if artifact.get("parent_artifact_id") is not None:
         raise ValueError("Родительский PDF должен быть исходным артефактом")
 

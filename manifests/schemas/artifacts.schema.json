@@ -112,7 +112,8 @@
     },
     "acquisition_status": {
       "type": "string",
-      "enum": ["discovered", "rights_blocked", "ready", "retrieved", "failed"]
+      "enum": ["discovered", "rights_blocked", "ready", "retrieved", "recorded", "failed"],
+      "description": "recorded фиксирует наличие исходного файла, но не разрешает его обработку или использование."
     },
     "extraction_status": {
       "type": "string",
@@ -156,7 +157,7 @@
     {
       "if": {
         "properties": {
-          "acquisition_status": {"enum": ["rights_blocked", "ready", "retrieved"]}
+          "acquisition_status": {"enum": ["rights_blocked", "ready", "retrieved", "recorded"]}
         },
         "required": ["acquisition_status"]
       },
@@ -181,7 +182,7 @@
     },
     {
       "if": {
-        "properties": {"acquisition_status": {"const": "retrieved"}},
+        "properties": {"acquisition_status": {"enum": ["retrieved", "recorded"]}},
         "required": ["acquisition_status"]
       },
       "then": {
@@ -197,6 +198,36 @@
           "path": {"type": "null"},
           "bytes": {"type": "null"},
           "h2_input_sha256": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"acquisition_status": {"const": "recorded"}},
+        "required": ["acquisition_status"]
+      },
+      "then": {
+        "properties": {
+          "parent_artifact_id": {"type": "null"},
+          "retrievals": {"minItems": 1},
+          "path": {"type": "string", "minLength": 1},
+          "bytes": {"type": "integer", "minimum": 0},
+          "extraction_status": {"const": "not_started"},
+          "qa_status": {"const": "quarantined"},
+          "processing_status": {"const": "not_started"},
+          "extraction_method": {"type": "null"},
+          "extraction_version": {"type": "null"},
+          "ocr_method": {"type": "null"},
+          "ocr_version": {"type": "null"},
+          "preprocessing_version": {"type": "null"},
+          "tokenizer_repo": {"type": "null"},
+          "tokenizer_revision": {"type": "null"},
+          "characters": {"type": "null"},
+          "words": {"type": "null"},
+          "subtokens": {"type": "null"},
+          "h2_input_sha256": {"type": "null"},
+          "label_leakage_audit_version": {"type": "null"},
+          "label_leakage_audit_status": {"const": "not_checked"}
         }
       }
     },

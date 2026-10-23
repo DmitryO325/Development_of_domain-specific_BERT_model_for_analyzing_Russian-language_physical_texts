@@ -16,6 +16,7 @@ from src.corpus.ocr_qa_preparation import (
     _PreparedPage,
     _first_pass_sample_ids,
     _publish_new_file,
+    _selected_artifacts,
     _serialized_page_text,
     _variant_extractor,
     _variants,
@@ -26,6 +27,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class OcrQaPreparationTests(unittest.TestCase):
     """Проверки плана, вспомогательных файлов и защиты от перезаписи."""
+
+    def test_recorded_pdf_is_rejected_before_file_access(self) -> None:
+        """Явный план OCR не может выбрать инвентарный PDF для обработки."""
+
+        path = "data/raw/inventory/article.pdf"
+        artifact = {
+            "representation": "pdf", "path": path,
+            "acquisition_status": "recorded",
+        }
+
+        with (
+            patch("src.corpus.ocr_qa_preparation.ManifestStore") as store_class,
+            patch("src.corpus.ocr_qa_preparation._resolve_project_file") as resolve,
+        ):
+            store_class.return_value.records.return_value = [artifact]
+
+            with self.assertRaisesRegex(ValueError, "recorded"):
+                _selected_artifacts(
+                    project_root=Path("/project"),
+                    page_plan={"pages": [{"source_pdf_path": path}]},
+                )
+
+        resolve.assert_not_called()
 
     def test_real_page_plan_matches_schema(self) -> None:
         """Фактический план калибровки должен проходить свою схему."""

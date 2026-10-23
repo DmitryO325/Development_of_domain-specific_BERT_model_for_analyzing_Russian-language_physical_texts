@@ -64,7 +64,6 @@
     "rights_record_ids": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},
-      "minItems": 1,
       "uniqueItems": true
     },
     "rights_snapshot_sha256": {"$ref": "#/$defs/sha256"},
@@ -76,7 +75,7 @@
     "supersedes_decision_id": {"type": ["string", "null"], "minLength": 1},
     "status": {
       "type": "string",
-      "enum": ["allowed", "blocked", "conditional_pending"]
+      "enum": ["allowed", "blocked", "conditional_pending", "unknown"]
     }
   },
   "$defs": {
@@ -129,6 +128,23 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "unknown"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "rights_record_ids": {"maxItems": 0},
+          "condition_fulfilment_ids": {"maxItems": 0},
+          "subject_type": {"enum": ["artifact", "retrieval"]},
+          "operation": {"enum": ["acquisition", "storage"]}
+        }
+      },
+      "else": {
+        "properties": {"rights_record_ids": {"minItems": 1}}
+      }
+    },
     {
       "if": {
         "properties": {"operation": {"const": "derivatives_release"}},
