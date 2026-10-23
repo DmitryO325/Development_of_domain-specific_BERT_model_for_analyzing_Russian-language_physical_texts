@@ -108,6 +108,88 @@ class LocalFileRegistrationTests(unittest.TestCase):
             "supersedes_rights_record_id": None,
         }
 
+    def _code_signal(self, code: str) -> dict[str, Any]:
+        """Создать исходный код с подтверждением синтетическим PDF."""
+
+        return {
+            "code": code,
+            "source_url": "https://ufn.ru/ufn2024/ufn2024_1/Russian/r241a.pdf",
+            "retrieved_at": RETRIEVED_AT,
+            "evidence_sha256": sha256_bytes(PDF_BYTES),
+        }
+
+    def test_optional_classification_lists_have_independent_defaults(self) -> None:
+        """Прежние карточки получают отдельные пустые списки ГРНТИ и МРНТИ."""
+
+        first = self.registration()
+        second = self.registration()
+
+        self.assertEqual(first.grnti_codes_raw, [])
+        self.assertEqual(first.mrnti_codes_raw, [])
+
+        first.grnti_codes_raw.append(self._code_signal("29.15.19"))
+
+        self.assertEqual(first.mrnti_codes_raw, [])
+        self.assertEqual(second.grnti_codes_raw, [])
+
+        first.mrnti_codes_raw.append(self._code_signal("29.19.29"))
+
+        self.assertEqual(second.mrnti_codes_raw, [])
+
+    def test_plan_copies_classification_codes_without_changing_inputs(self) -> None:
+        """План хранит исходные коды отдельно и не разделяет изменяемые объекты."""
+
+        registration = self.registration(
+            grnti_codes_raw=[self._code_signal("29.15.19")],
+            mrnti_codes_raw=[self._code_signal("29.19.29")],
+        )
+        original = copy.deepcopy(registration)
+        plan = plan_local_file(
+            registration,
+            self.profile,
+            self.options,
+            project_root=self.project_root,
+        )
+        work = plan.works[0]
+
+        self.assertEqual(registration, original)
+        self.assertEqual(work["grnti_codes_raw"], original.grnti_codes_raw)
+        self.assertEqual(work["mrnti_codes_raw"], original.mrnti_codes_raw)
+        self.assertEqual(work["eligibility_status"], "pending")
+
+        registration.grnti_codes_raw[0]["code"] = "29.05.01"
+        registration.mrnti_codes_raw[0]["code"] = "29.27.01"
+
+        self.assertEqual(work["grnti_codes_raw"], original.grnti_codes_raw)
+        self.assertEqual(work["mrnti_codes_raw"], original.mrnti_codes_raw)
+
+    def test_plan_with_classification_codes_passes_commit(self) -> None:
+        """Запись в реестр сохраняет коды с источниками без назначения допуска."""
+
+        registration = self.registration(
+            grnti_codes_raw=[self._code_signal("29.15.19")],
+            mrnti_codes_raw=[self._code_signal("29.19.29")],
+        )
+        plan = plan_local_file(
+            registration,
+            self.profile,
+            self.options,
+            project_root=self.project_root,
+        )
+        plan.rights = [self.right("acquisition"), self.right("storage")]
+        store = ManifestStore(
+            project_root=self.project_root,
+            manifest_dir=self.project_root / "manifests",
+            schema_dir=ROOT / "manifests" / "schemas",
+        )
+        store.commit(plan)
+        work = store.records("works")[0]
+
+        self.assertEqual(work["grnti_codes_raw"], registration.grnti_codes_raw)
+        self.assertEqual(work["mrnti_codes_raw"], registration.mrnti_codes_raw)
+        self.assertEqual(work["eligibility_status"], "pending")
+        self.assertTrue(store.audit().ok)
+
     def test_plan_describes_existing_pdf_without_blob(self) -> None:
         """План должен ссылаться на точные байты и ручное получение."""
 
@@ -302,6 +384,33 @@ class LocalFileRegistrationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "повторный ключ"):
             read_local_file_registrations(input_path)
+
+    def test_reads_old_and_new_classification_fields_from_jsonl(self) -> None:
+        """Загрузчик принимает прежние JSONL и независимые новые списки кодов."""
+
+        input_path = self.project_root / "registrations.jsonl"
+        original = self.registration()
+        old_record = dict(original.__dict__)
+        old_record.pop("grnti_codes_raw")
+        old_record.pop("mrnti_codes_raw")
+        with_codes = self.registration(
+            grnti_codes_raw=[self._code_signal("29.15.19")],
+            mrnti_codes_raw=[self._code_signal("29.19.29")],
+        )
+        only_mrnti = self.registration(
+            mrnti_codes_raw=[self._code_signal("29.19.29")],
+        )
+        mrnti_record = dict(only_mrnti.__dict__)
+        mrnti_record.pop("grnti_codes_raw")
+        records = [old_record, with_codes.__dict__, mrnti_record]
+        input_path.write_text(
+            "".join(json.dumps(record) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+        registrations = read_local_file_registrations(input_path)
+
+        self.assertEqual(registrations, [original, with_codes, only_mrnti])
 
 
 if __name__ == "__main__":

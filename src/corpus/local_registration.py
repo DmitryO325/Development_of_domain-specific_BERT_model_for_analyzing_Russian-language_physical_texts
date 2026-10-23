@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -51,6 +51,8 @@ class LocalFileRegistration:
     acquisition_agent: str
     eligibility_status: str
     exclusion_reason: str | None
+    grnti_codes_raw: list[dict[str, Any]] = field(default_factory=list)
+    mrnti_codes_raw: list[dict[str, Any]] = field(default_factory=list)
 
 
 def read_local_file_registrations(path: Path) -> list[LocalFileRegistration]:
@@ -606,6 +608,8 @@ def _build_work(
         "genre": genre,
         "pacs_codes_raw": copy.deepcopy(registration.pacs_codes_raw),
         "udc_codes_raw": copy.deepcopy(registration.udc_codes_raw),
+        "grnti_codes_raw": copy.deepcopy(registration.grnti_codes_raw),
+        "mrnti_codes_raw": copy.deepcopy(registration.mrnti_codes_raw),
         "publisher_section": section,
         "duplicate_of_work_id": None,
         "eligibility_status": eligibility_status,

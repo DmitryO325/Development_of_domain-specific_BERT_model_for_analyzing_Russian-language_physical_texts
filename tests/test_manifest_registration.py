@@ -155,6 +155,16 @@ class ManifestRegistrationTests(unittest.TestCase):
             for record in getattr(plan, kind):
                 self.schema_catalog.validate(kind, record)
 
+    def _code_signal(self, code: str) -> dict[str, str]:
+        """Создать исходный классификационный код с синтетическим подтверждением."""
+
+        return {
+            "code": code,
+            "source_url": "https://example.invalid/classification",
+            "retrieved_at": FIRST_TIMESTAMP,
+            "evidence_sha256": "a" * 64,
+        }
+
     def test_work_response_creates_raw_parent_and_derived_text(self) -> None:
         """Ответ статьи должен стать родителем производного текста."""
 
@@ -391,6 +401,214 @@ class ManifestRegistrationTests(unittest.TestCase):
             expected_snapshot_hashes=expected_hashes,
         )
         self.assertEqual(result.unchanged["retrieval_events"], 1)
+
+    def test_classification_codes_extend_work_without_optional_fields(self) -> None:
+        """Исходные ГРНТИ и МРНТИ дополняют старую карточку без назначения меток."""
+
+        initial = plan_document(
+            self.document(),
+            self.profile,
+            self.options,
+            FIRST_TIMESTAMP,
+            self.response(),
+        )
+        initial_work = initial.works[0]
+
+        for field in ("grnti_codes_raw", "mrnti_codes_raw"):
+            initial_work.pop(field, None)
+
+        self.add_rights(initial)
+        self.store.commit(initial)
+        candidate_work = copy.deepcopy(initial_work)
+        candidate_work["updated_at"] = SECOND_TIMESTAMP
+        candidate_work["grnti_codes_raw"] = [self._code_signal("29.15.19")]
+        candidate_work["mrnti_codes_raw"] = [self._code_signal("29.19.29")]
+        candidate = ManifestPlan(
+            works=[candidate_work],
+            retrieval_events=copy.deepcopy(initial.retrieval_events),
+        )
+        reconciled, expected_hashes = reconcile_document_plan(self.store, candidate)
+        self.validate_plan_records(reconciled)
+
+        updated_work = reconciled.works[0]
+        expected_work = {**candidate_work, "updated_at": updated_work["updated_at"]}
+        self.assertEqual(updated_work, expected_work)
+        self.assertNotEqual(updated_work["updated_at"], initial_work["updated_at"])
+        self.assertEqual(reconciled.identity_conflicts, [])
+        result = self.store.commit(
+            reconciled,
+            expected_snapshot_hashes=expected_hashes,
+        )
+
+        self.assertEqual(result.updated["works"], 1)
+        self.assertEqual(result.inserted["work_revisions"], 1)
+        self.assertEqual(result.inserted["operation_decisions"], 0)
+        self.assertEqual(self.store.records("works"), [expected_work])
+        self.assertCountEqual(self.store.records("artifacts"), initial.artifacts)
+        revision = next(
+            record
+            for record in self.store.records("work_revisions")
+            if record["previous_sha256"] is not None
+        )
+        self.assertEqual(
+            revision["changed_fields"],
+            ["grnti_codes_raw", "mrnti_codes_raw"],
+        )
+
+    def test_classification_code_union_preserves_distinct_evidence(self) -> None:
+        """Списки кодов сохраняют происхождение и убирают только точные повторы."""
+
+        initial = plan_document(
+            self.document(),
+            self.profile,
+            self.options,
+            FIRST_TIMESTAMP,
+            self.response(),
+        )
+        initial_work = initial.works[0]
+        initial_work["grnti_codes_raw"] = [self._code_signal("29.15.19")]
+        initial_work["mrnti_codes_raw"] = [self._code_signal("29.19.29")]
+        self.add_rights(initial)
+        self.store.commit(initial)
+        candidate_work = copy.deepcopy(initial_work)
+        candidate_work["updated_at"] = SECOND_TIMESTAMP
+        expected_codes: dict[str, list[dict[str, str]]] = {}
+
+        for field in ("grnti_codes_raw", "mrnti_codes_raw"):
+            existing_signal = initial_work[field][0]
+            new_signal = self._code_signal("29.05.01")
+            distinct_evidence = [
+                {**existing_signal, "source_url": "https://example.invalid/other"},
+                {**existing_signal, "retrieved_at": SECOND_TIMESTAMP},
+                {**existing_signal, "evidence_sha256": "b" * 64},
+            ]
+            candidate_work[field] = [
+                new_signal,
+                existing_signal,
+                new_signal,
+                *distinct_evidence,
+                distinct_evidence[0],
+            ]
+            expected_codes[field] = [existing_signal, new_signal, *distinct_evidence]
+
+        original_candidate = copy.deepcopy(candidate_work)
+        candidate = ManifestPlan(
+            works=[candidate_work],
+            retrieval_events=copy.deepcopy(initial.retrieval_events),
+        )
+        reconciled, expected_hashes = reconcile_document_plan(self.store, candidate)
+        self.validate_plan_records(reconciled)
+
+        for field, signals in expected_codes.items():
+            self.assertEqual(reconciled.works[0][field], signals)
+
+        self.assertEqual(candidate_work, original_candidate)
+        self.assertEqual(reconciled.works[0]["eligibility_status"], "pending")
+        self.assertIsNone(reconciled.works[0]["exclusion_reason"])
+        self.assertEqual(reconciled.identity_conflicts, [])
+        first_result = self.store.commit(
+            reconciled,
+            expected_snapshot_hashes=expected_hashes,
+        )
+        repeated, repeated_hashes = reconcile_document_plan(self.store, candidate)
+        second_result = self.store.commit(
+            repeated,
+            expected_snapshot_hashes=repeated_hashes,
+        )
+
+        self.assertEqual(first_result.updated["works"], 1)
+        self.assertEqual(second_result.updated["works"], 0)
+        self.assertEqual(second_result.unchanged["works"], 1)
+        self.assertEqual(second_result.inserted["work_revisions"], 0)
+        self.assertEqual(self.store.records("works"), reconciled.works)
+
+    def test_empty_or_missing_classification_codes_preserve_existing_values(self) -> None:
+        """Пустые или отсутствующие списки не стирают коды и не создают ревизий."""
+
+        initial = plan_document(
+            self.document(),
+            self.profile,
+            self.options,
+            FIRST_TIMESTAMP,
+            self.response(),
+        )
+        initial_work = initial.works[0]
+        initial_work["grnti_codes_raw"] = [self._code_signal("29.15.19")]
+        initial_work["mrnti_codes_raw"] = [self._code_signal("29.19.29")]
+        self.add_rights(initial)
+        self.store.commit(initial)
+        initial_hashes = self.store.snapshot_hashes()
+        initial_revisions = self.store.records("work_revisions")
+
+        for include_empty_fields in (False, True):
+            with self.subTest(include_empty_fields=include_empty_fields):
+                candidate_work = copy.deepcopy(initial_work)
+                candidate_work["updated_at"] = SECOND_TIMESTAMP
+
+                for field in ("grnti_codes_raw", "mrnti_codes_raw"):
+                    if include_empty_fields:
+                        candidate_work[field] = []
+
+                    else:
+                        candidate_work.pop(field)
+
+                candidate = ManifestPlan(
+                    works=[candidate_work],
+                    retrieval_events=copy.deepcopy(initial.retrieval_events),
+                )
+                reconciled, expected_hashes = reconcile_document_plan(
+                    self.store,
+                    candidate,
+                )
+
+                self.assertEqual(reconciled.works, initial.works)
+                self.assertEqual(reconciled.work_update_reasons, {})
+                result = self.store.commit(
+                    reconciled,
+                    expected_snapshot_hashes=expected_hashes,
+                )
+                self.assertEqual(result.updated["works"], 0)
+                self.assertEqual(result.inserted["work_revisions"], 0)
+                self.assertEqual(self.store.snapshot_hashes(), initial_hashes)
+                self.assertEqual(self.store.records("work_revisions"), initial_revisions)
+
+    def test_empty_classification_codes_do_not_migrate_old_work(self) -> None:
+        """Пустые новые поля не меняют старую запись, в которой их не было."""
+
+        initial = plan_document(
+            self.document(),
+            self.profile,
+            self.options,
+            FIRST_TIMESTAMP,
+            self.response(),
+        )
+        initial_work = initial.works[0]
+
+        for field in ("grnti_codes_raw", "mrnti_codes_raw"):
+            initial_work.pop(field, None)
+
+        self.add_rights(initial)
+        self.store.commit(initial)
+        initial_hashes = self.store.snapshot_hashes()
+        candidate_work = copy.deepcopy(initial_work)
+        candidate_work["updated_at"] = SECOND_TIMESTAMP
+        candidate_work["grnti_codes_raw"] = []
+        candidate_work["mrnti_codes_raw"] = []
+        candidate = ManifestPlan(
+            works=[candidate_work],
+            retrieval_events=copy.deepcopy(initial.retrieval_events),
+        )
+        reconciled, expected_hashes = reconcile_document_plan(self.store, candidate)
+
+        self.assertEqual(reconciled.works, initial.works)
+        self.assertEqual(reconciled.work_update_reasons, {})
+        result = self.store.commit(
+            reconciled,
+            expected_snapshot_hashes=expected_hashes,
+        )
+        self.assertEqual(result.updated["works"], 0)
+        self.assertEqual(result.inserted["work_revisions"], 0)
+        self.assertEqual(self.store.snapshot_hashes(), initial_hashes)
 
     def test_late_doi_preserves_work_id_and_adds_verified_alias(self) -> None:
         """Поздний DOI должен дополнить, а не переименовать существующую работу."""

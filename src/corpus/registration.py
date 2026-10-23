@@ -66,6 +66,8 @@ LIST_WORK_FIELDS = {
     "keywords",
     "pacs_codes_raw",
     "udc_codes_raw",
+    "grnti_codes_raw",
+    "mrnti_codes_raw",
 }
 REPRESENTATION_EXTENSIONS = {
     "pdf": "pdf",
