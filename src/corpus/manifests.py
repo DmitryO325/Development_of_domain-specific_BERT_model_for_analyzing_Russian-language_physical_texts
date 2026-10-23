@@ -72,6 +72,7 @@ SCOPE_SPECIFICITY = {
     "artifact": 5,
     "retrieval": 6,
 }
+LOCAL_PDF_TEXT_METHODS = {"plain_text": "pdf", "ocr_text": "pdf_ocr_layout"}
 
 
 class ManifestError(RuntimeError):
@@ -1574,6 +1575,10 @@ class ManifestStore:
             for item in operation_decisions.values()
             if item.get("supersedes_decision_id")
         }
+        artifacts_by_id = {
+            item["artifact_id"]: item for item in snapshots["artifacts"].values()
+            if item.get("artifact_id")
+        }
 
         for artifact_id, artifact in snapshots["artifacts"].items():
             previous_artifact = current["artifacts"].get(artifact_id)
@@ -1599,6 +1604,7 @@ class ManifestStore:
             if (
                 acquisition_status in {"rights_blocked", "ready", "retrieved", "recorded"}
                 and not acquisition_was_recorded
+                and not self._is_local_pdf_text_derivative(artifact, artifacts_by_id, retrieval_events)
             ):
                 operations.append("acquisition")
 
@@ -2395,6 +2401,18 @@ class ManifestStore:
                     f"artifacts: {record_id}: производные от recorded "
                     "артефакта запрещены до разрешения использования"
                 )
+
+            if (
+                parent_id
+                and artifact["representation"] in LOCAL_PDF_TEXT_METHODS
+                and artifact.get("extraction_method") in LOCAL_PDF_TEXT_METHODS.values()
+            ):
+                derivation_error = self._local_pdf_text_derivation_error(
+                    artifact, by_artifact_id, records["retrieval_events"],
+                )
+
+                if derivation_error:
+                    errors.append(f"artifacts: {record_id}: {derivation_error}")
 
             if (
                 artifact.get("extraction_version") == "legacy-import-v1"
@@ -3477,12 +3495,19 @@ class ManifestStore:
             for decision_id, decision in decisions.items()
             if decision_id not in superseded_decision_ids
         ]
+        artifacts_by_id = {
+            item["artifact_id"]: item for item in records["artifacts"].values()
+            if item.get("artifact_id")
+        }
 
         for artifact_id, artifact in records["artifacts"].items():
             operations: list[str] = []
 
             if (
                 artifact["acquisition_status"] in {"rights_blocked", "ready", "retrieved", "recorded"}
+                and not cls._is_local_pdf_text_derivative(
+                    artifact, artifacts_by_id, records["retrieval_events"],
+                )
             ):
                 operations.append("acquisition")
 
@@ -4265,6 +4290,96 @@ class ManifestStore:
                 seen.add(current)
                 current = duplicate_graph[current]
 
+    @classmethod
+    def _is_local_pdf_text_derivative(
+        cls,
+        artifact: dict[str, Any],
+        artifacts_by_id: dict[str, dict[str, Any]],
+        retrieval_events: dict[str, dict[str, Any]],
+    ) -> bool:
+        """Отделить подтверждённое локальное извлечение от нового получения исходника."""
+
+        if (
+            not artifact.get("parent_artifact_id")
+            or artifact.get("representation") not in LOCAL_PDF_TEXT_METHODS
+            or artifact.get("extraction_method") not in LOCAL_PDF_TEXT_METHODS.values()
+        ):
+            return False
+
+        return cls._local_pdf_text_derivation_error(artifact, artifacts_by_id, retrieval_events) is None
+
+    @classmethod
+    def _local_pdf_text_derivation_error(
+        cls,
+        artifact: dict[str, Any],
+        artifacts_by_id: dict[str, dict[str, Any]],
+        retrieval_events: dict[str, dict[str, Any]],
+    ) -> str | None:
+        """Проверить PDF-родителя, точное происхождение и время локального текста."""
+
+        parent_id = artifact.get("parent_artifact_id")
+        parent = artifacts_by_id.get(parent_id) if isinstance(parent_id, str) else None
+
+        if (
+            parent is None
+            or parent.get("representation") != "pdf"
+            or parent.get("parent_artifact_id") is not None
+            or parent.get("acquisition_status") != "retrieved"
+            or parent.get("work_id") != artifact.get("work_id")
+            or parent.get("artifact_id") == artifact.get("artifact_id")
+        ):
+            return "локальный текст требует исходный PDF retrieved той же работы без родителя"
+
+        if (
+            artifact.get("acquisition_status") != "retrieved"
+            or artifact.get("extraction_status") != "succeeded"
+            or LOCAL_PDF_TEXT_METHODS.get(artifact.get("representation", "")) != artifact.get("extraction_method")
+            or any(artifact.get(field) != parent.get(field) for field in ("acquisition_method", "acquisition_scope"))
+        ):
+            return "метод, статус или контекст локального извлечения не соответствует PDF-родителю"
+
+        parent_retrievals = {entry["retrieval_id"]: entry for entry in parent.get("retrievals", [])}
+        child_retrievals = artifact.get("retrievals", [])
+
+        if not parent_retrievals or not child_retrievals:
+            return "локальный текст должен сохранять непустое происхождение от PDF"
+
+        seen_retrievals: set[str] = set()
+        successful_origins: list[datetime] = []
+
+        for entry in child_retrievals:
+            retrieval_id = entry["retrieval_id"]
+            event = retrieval_events.get(retrieval_id)
+
+            if retrieval_id in seen_retrievals or parent_retrievals.get(retrieval_id) != entry or event is None:
+                return "происхождение локального текста не является точным подмножеством происхождения PDF"
+
+            seen_retrievals.add(retrieval_id)
+
+            try:
+                cls._validate_retrieval_projection(artifact, entry, event)
+
+            except ManifestConflictError:
+                return "ссылка локального текста не соответствует реальному событию получения PDF"
+
+            if (
+                event.get("outcome") == "succeeded"
+                and event.get("response_sha256") == parent.get("sha256")
+                and event.get("response_bytes") == parent.get("bytes")
+                and event.get("acquisition_method") == parent.get("acquisition_method")
+                and event.get("acquisition_scope") == parent.get("acquisition_scope")
+            ):
+                successful_origins.append(datetime.fromisoformat(event["retrieved_at"].replace("Z", "+00:00")))
+
+        if not successful_origins:
+            return "локальный текст не имеет подтверждённого успешного получения байтов PDF-родителя"
+
+        if datetime.fromisoformat(artifact["created_at"].replace("Z", "+00:00")) < min(successful_origins):
+            return "локальный текст создан раньше подтверждённого получения PDF-родителя"
+
+        # Старые acquisition-решения остаются историей; новое извлечение создаёт только storage.
+        return None
+
     @staticmethod
     def _rights_apply(
         rights: dict[str, Any], work: dict[str, Any], artifact: dict[str, Any]
@@ -4307,6 +4422,9 @@ class ManifestStore:
 
         artifact_paths: dict[str, dict[str, Any]] = {}
         payload_specs: dict[str, _BlobSpec] = {}
+        artifacts_by_id = {
+            row["artifact_id"]: row for row in artifacts.values() if row.get("artifact_id")
+        }
 
         for artifact in artifacts.values():
             record_id = artifact["artifact_record_id"]
@@ -4385,6 +4503,20 @@ class ManifestStore:
         for right in rights.values():
             if right["rights_record_id"].startswith("right:journal-batch:"):
                 evidence_directory = "journal_registration"
+
+            elif right["rights_record_id"].startswith("right:derived-text:"):
+                child = artifacts.get(right["scope_id"])
+
+                if (
+                    right["scope_type"] != "artifact"
+                    or right["operation"] != "storage"
+                    or right["basis_type"] != "lawful_access_research_assumption"
+                    or child is None
+                    or not self._is_local_pdf_text_derivative(child, artifacts_by_id, retrieval_events)
+                ):
+                    raise ManifestError("Свидетельство TXT требует точечного основания хранения производного текста")
+
+                evidence_directory = "derived_text_registration"
 
             else:
                 continue

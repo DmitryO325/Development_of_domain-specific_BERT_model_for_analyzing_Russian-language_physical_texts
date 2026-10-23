@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import tempfile
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -29,13 +31,17 @@ from src.collect.pdf_text import (  # noqa: E402
     extract_best_text_result,
     pdf_extraction_version,
 )
+from src.corpus.derived_text_rights import (  # noqa: E402
+    DerivedTextApproval,
+    attach_derived_storage,
+    load_derived_text_approval,
+)
 from src.corpus.extraction_registration import (  # noqa: E402
     find_registered_pdf_artifact,
     normalize_extraction_version,
     plan_extracted_text,
 )
 from src.corpus.local_registration import (  # noqa: E402
-    LocalFileRegistration,
     read_local_file_registrations,
 )
 from src.corpus.manifests import (  # noqa: E402
@@ -53,6 +59,15 @@ EXPECTED_EXTRACTION_ERRORS = (
     TypeError,
     ValueError,
 )
+
+
+@dataclass(frozen=True)
+class ExtractionInput:
+    """Путь исходного PDF и название для отчёта без изменения карточки работы."""
+
+    relative_path: str
+    title: str
+    pdf_sha256: str | None = None
 
 
 class ExtractionFunction(Protocol):
@@ -104,6 +119,34 @@ def _positive_integer(value: str) -> int:
     return parsed_value
 
 
+def _pdf_sha256(value: str) -> str:
+    """Проверить полный SHA-256 и привести шестнадцатеричные буквы к нижнему регистру."""
+
+    digest = value.lower()
+
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise argparse.ArgumentTypeError("SHA-256 должен содержать ровно 64 символа 0–9, a–f")
+
+    return digest
+
+
+def _positive_finite_number(value: str) -> float:
+    """Разобрать конечную положительную координату в пунктах PDF."""
+
+    try:
+        parsed_value = float(value)
+
+    except ValueError as exception:
+        raise argparse.ArgumentTypeError("ожидается число") from exception
+
+    if not math.isfinite(parsed_value) or parsed_value <= 0:
+        raise argparse.ArgumentTypeError("нужно конечное положительное число")
+
+    return parsed_value
+
+
 def _build_parser(project_root: Path) -> argparse.ArgumentParser:
     """Построить интерфейс команды извлечения зарегистрированных PDF."""
 
@@ -116,7 +159,24 @@ def _build_parser(project_root: Path) -> argparse.ArgumentParser:
     parser.add_argument(
         "input",
         type=Path,
-        help="JSONL-файл с карточками LocalFileRegistration",
+        help=(
+            "JSONL с карточками LocalFileRegistration либо согласованный "
+            "candidates.jsonl при --derived-storage-approval"
+        ),
+    )
+    parser.add_argument(
+        "--derived-storage-approval",
+        type=Path,
+        help="Согласование точного списка PDF и хранения их производных TXT",
+    )
+    parser.add_argument(
+        "--pdf-sha256",
+        type=_pdf_sha256,
+        action="append",
+        help=(
+            "Выбрать PDF по полному SHA-256 из согласованной партии; "
+            "можно повторять для разных файлов, порядок берётся из партии"
+        ),
     )
     parser.add_argument(
         "--manifest-dir",
@@ -128,7 +188,8 @@ def _build_parser(project_root: Path) -> argparse.ArgumentParser:
         "--extraction-version",
         help=(
             "Версия алгоритма извлечения и каталог в data/extracted/ "
-            "(по умолчанию определяется выбранным макетом OCR rus+eng)"
+            "(по умолчанию определяется макетом OCR rus+eng; "
+            "ручная граница добавляет суффикс -header-<координата>pt)"
         ),
     )
     parser.add_argument(
@@ -138,6 +199,14 @@ def _build_parser(project_root: Path) -> argparse.ArgumentParser:
         help=(
             "Макет OCR: ufn — прежняя обработка УФН; single-column — "
             "страница целиком; two-column — две колонки (по умолчанию ufn)"
+        ),
+    )
+    parser.add_argument(
+        "--first-page-split-y",
+        type=_positive_finite_number,
+        help=(
+            "Граница между шапкой и колонками первой страницы в пунктах PDF "
+            "от верхнего края; только для --ocr-layout ufn с включённым OCR"
         ),
     )
     parser.add_argument(
@@ -185,10 +254,17 @@ def _project_path(path: Path, *, project_root: Path) -> Path:
     return path if path.is_absolute() else project_root / path
 
 
-def _resolve_extraction_version(version: str | None, ocr_layout: str) -> str:
+def _resolve_extraction_version(
+    version: str | None,
+    ocr_layout: str,
+    *,
+    first_page_split_y: float | None = None,
+) -> str:
     """Выбрать версию макета и отклонить стандартную версию другого макета."""
 
-    default_version = pdf_extraction_version(ocr_layout)
+    default_version = pdf_extraction_version(
+        ocr_layout, first_page_split_y=first_page_split_y,
+    )
     extraction_version = normalize_extraction_version(
         default_version if version is None else version
     )
@@ -203,9 +279,31 @@ def _resolve_extraction_version(version: str | None, ocr_layout: str) -> str:
     ):
         raise ValueError(
             f"extraction_version={extraction_version!r} относится к другому "
-            f"макету OCR; для {ocr_layout!r} используйте {default_version!r} "
+            "макету OCR или границе шапки; "
+            f"для {ocr_layout!r} используйте {default_version!r} "
             "или собственную уникальную версию"
         )
+
+    if "-header-" in extraction_version:
+        if first_page_split_y is None:
+            raise ValueError("Версия с границей шапки требует --first-page-split-y")
+
+        base_version = extraction_version.split("-header-", maxsplit=1)[0]
+
+        if (
+            base_version in reserved_versions
+            and base_version != pdf_extraction_version(ocr_layout)
+        ):
+            raise ValueError("Версия с границей шапки относится к другому макету OCR")
+
+        expected_suffix = default_version[len(pdf_extraction_version(ocr_layout)):]
+
+        if not extraction_version.endswith(expected_suffix):
+            raise ValueError("Граница шапки в extraction_version не совпадает с параметром")
+
+    elif first_page_split_y is not None:
+        expected_suffix = default_version[len(pdf_extraction_version(ocr_layout)):]
+        extraction_version = normalize_extraction_version(extraction_version + expected_suffix)
 
     return extraction_version
 
@@ -320,6 +418,8 @@ def _combine_plans(plans: list[ManifestPlan]) -> ManifestPlan:
     combined = ManifestPlan()
 
     for plan in plans:
+        combined.rights.extend(plan.rights)
+        combined.condition_fulfilments.extend(plan.condition_fulfilments)
         combined.artifacts.extend(plan.artifacts)
         combined.blobs.extend(plan.blobs)
         combined.artifact_update_reasons.update(plan.artifact_update_reasons)
@@ -328,7 +428,7 @@ def _combine_plans(plans: list[ManifestPlan]) -> ManifestPlan:
 
 
 def _validate_unique_registrations(
-    registrations: list[LocalFileRegistration],
+    registrations: list[ExtractionInput],
     *,
     project_root: Path,
 ) -> None:
@@ -351,6 +451,31 @@ def _validate_unique_registrations(
             )
 
         seen_paths.add(normalized_path)
+
+
+def _select_pdf_registrations(
+    registrations: list[ExtractionInput],
+    selected_sha256: list[str],
+) -> list[ExtractionInput]:
+    """Выбрать точное подмножество согласованных PDF в исходном порядке партии."""
+
+    selected = set(selected_sha256)
+
+    if len(selected) != len(selected_sha256):
+        raise ValueError("Повторный --pdf-sha256: каждый PDF укажите только один раз")
+
+    available = {registration.pdf_sha256 for registration in registrations}
+    missing = selected - available
+
+    if missing:
+        raise ValueError(
+            "SHA-256 отсутствует в согласованной партии: " + ", ".join(sorted(missing))
+        )
+
+    return [
+        registration for registration in registrations
+        if registration.pdf_sha256 in selected
+    ]
 
 
 def _remember_artifact(
@@ -385,7 +510,7 @@ def _tesseract_version() -> str:
 
 
 def _report_record(
-    registration: LocalFileRegistration,
+    registration: ExtractionInput,
     *,
     extracted_at: str,
     status: str,
@@ -394,6 +519,7 @@ def _report_record(
     extraction_method: str | None = None,
     extraction_version: str | None = None,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
     ocr_attempted: bool = False,
     ocr_version: str | None = None,
     automatic_readability: bool | None = None,
@@ -444,6 +570,7 @@ def _report_record(
         ),
         "ocr_attempted": ocr_attempted,
         "ocr_layout": ocr_layout,
+        "first_page_split_y": first_page_split_y,
         "characters": len(text),
         "words": len(text.split()),
         "cyrillic_letter_ratio": cyrillic_letter_ratio(text),
@@ -510,7 +637,7 @@ def _print_commit_result(result: Any) -> None:
             print(f"{label}: {', '.join(nonzero)}")
 
     print(
-        "Текстовые файлы: "
+        "Файлы пакета (тексты и свидетельства): "
         f"новых={result.written_blobs}, "
         f"без изменений={result.unchanged_blobs}"
     )
@@ -529,9 +656,17 @@ def run_extraction(
 
     root = project_root.resolve()
     options = _build_parser(root).parse_args(arguments)
+
+    if options.pdf_sha256 and options.derived_storage_approval is None:
+        raise ValueError("--pdf-sha256 требует --derived-storage-approval")
+
+    if options.first_page_split_y is not None and options.no_ocr:
+        raise ValueError("--first-page-split-y нельзя использовать с --no-ocr")
+
     extraction_version = _resolve_extraction_version(
         options.extraction_version,
         options.ocr_layout,
+        first_page_split_y=options.first_page_split_y,
     )
     input_path = _project_path(options.input, project_root=root).resolve()
     manifest_dir = _project_path(options.manifest_dir, project_root=root).resolve()
@@ -553,7 +688,38 @@ def run_extraction(
         options.page_output_dir,
         project_root=root,
     ).resolve()
-    registrations = read_local_file_registrations(input_path)
+    scope: DerivedTextApproval | None = None
+
+    if options.derived_storage_approval is not None:
+        if options.export_pages:
+            raise ValueError(
+                "Согласование производного TXT не включает --export-pages: "
+                "для отдельных файлов страниц нужны собственные основания"
+            )
+
+        scope = load_derived_text_approval(
+            _project_path(options.derived_storage_approval, project_root=root),
+            project_root=root,
+        )
+
+        if input_path != (root / scope.approval["candidate_file"]).resolve():
+            raise ValueError("Вход должен быть списком PDF из согласованной партии")
+
+        registrations = [
+            ExtractionInput(
+                candidate["pdf_path"], candidate["title"], candidate["pdf_sha256"],
+            )
+            for candidate in scope.candidates
+        ]
+
+    else:
+        registrations = [
+            ExtractionInput(record.relative_path, record.title)
+            for record in read_local_file_registrations(input_path)
+        ]
+
+    if options.pdf_sha256:
+        registrations = _select_pdf_registrations(registrations, options.pdf_sha256)
 
     if options.limit is not None:
         registrations = registrations[: options.limit]
@@ -568,6 +734,17 @@ def run_extraction(
     expected_snapshot_hashes = store.snapshot_hashes()
     known_artifacts = store.records("artifacts")
     extracted_at = datetime.now().astimezone().isoformat(timespec="microseconds")
+
+    if scope is not None:
+        # Проверяем всю выбранную партию до OCR, а не после создания её текстов.
+        for registration in registrations:
+            parent = find_registered_pdf_artifact(
+                store,
+                registration.relative_path,
+                project_root=root,
+            )
+            scope.validate_parent(parent, store=store, at=extracted_at)
+
     plans: list[ManifestPlan] = []
     report_records: list[dict[str, Any]] = []
     failed_count = 0
@@ -593,12 +770,25 @@ def run_extraction(
                 registration.relative_path,
                 project_root=root,
             )
+
+            if scope is not None:
+                scope.validate_parent(
+                    parent_artifact, store=store, at=extracted_at,
+                )
+
             pdf_path = root / parent_artifact["path"]
+            extraction_parameters: dict[str, Any] = {}
+
+            if options.first_page_split_y is not None:
+                # Старые подмены извлечения не принимают необязательную координату.
+                extraction_parameters["first_page_split_y"] = options.first_page_split_y
+
             extraction_value = extractor(
                 pdf_path,
                 text_dir=None,
                 try_ocr=not options.no_ocr,
                 ocr_layout=options.ocr_layout,
+                **extraction_parameters,
             )
             (
                 text,
@@ -672,6 +862,7 @@ def run_extraction(
                         extraction_method=extraction_method,
                         extraction_version=extraction_version,
                         ocr_layout=options.ocr_layout,
+                        first_page_split_y=options.first_page_split_y,
                         ocr_attempted=ocr_attempted,
                         ocr_version=ocr_version,
                         automatic_readability=False,
@@ -685,6 +876,8 @@ def run_extraction(
                 )
                 continue
 
+            # Дата локального создания не является датой получения исходного PDF.
+            extracted_at = datetime.now().astimezone().isoformat(timespec="microseconds")
             plan = plan_extracted_text(
                 parent_artifact,
                 text,
@@ -693,7 +886,18 @@ def run_extraction(
                 extracted_at=extracted_at,
                 existing_artifacts=known_artifacts,
                 ocr_version=ocr_version,
+                rights_record_ids=() if scope is not None else None,
             )
+
+            if scope is not None:
+                plan = attach_derived_storage(
+                    plan,
+                    scope=scope,
+                    parent=parent_artifact,
+                    store=store,
+                    at=extracted_at,
+                )
+
             text_artifact = plan.artifacts[0]
             reused = any(
                 artifact.get("artifact_id") == text_artifact["artifact_id"]
@@ -711,6 +915,7 @@ def run_extraction(
                     extraction_method=extraction_method,
                     extraction_version=extraction_version,
                     ocr_layout=options.ocr_layout,
+                    first_page_split_y=options.first_page_split_y,
                     ocr_attempted=ocr_attempted,
                     ocr_version=ocr_version,
                     automatic_readability=True,
@@ -737,6 +942,7 @@ def run_extraction(
                     extraction_method=extraction_method,
                     extraction_version=extraction_version,
                     ocr_layout=options.ocr_layout,
+                    first_page_split_y=options.first_page_split_y,
                     ocr_attempted=ocr_attempted,
                     ocr_version=ocr_version,
                     automatic_readability=automatic_readability,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import tempfile
@@ -13,10 +14,13 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from scripts.rebuild_from_pdf import DEFAULT_EXTRACTION_VERSION, run_extraction
+from src.collect.pdf_text import pdf_extraction_version
 from src.corpus.local_registration import LocalFileRegistration, plan_local_file
 from src.corpus.manifests import ManifestPlan, ManifestStore, canonical_json
 from src.corpus.profiles import get_source_profile
 from src.corpus.registration import RegistrationOptions
+
+from tests import test_derived_text_rights as derived_rights_tests
 
 ROOT = Path(__file__).resolve().parents[1]
 PDF_BYTES = b"%PDF-1.7\nscript extraction test\n%%EOF\n"
@@ -200,6 +204,377 @@ class RebuildFromPdfTests(unittest.TestCase):
         self.assertEqual(self.store.snapshot_hashes(), hashes)
         self.assertFalse((self.project_root / "data" / "extracted").exists())
         self.assertFalse((self.project_root / "data" / "qa").exists())
+
+    def scoped_approval(self, input_path: Path, letters: tuple[str, ...]) -> MagicMock:
+        """Подменить только загрузчик согласования для проверки интерфейса CLI."""
+
+        scope = MagicMock()
+        scope.approval = {
+            "candidate_file": input_path.relative_to(self.project_root).as_posix(),
+        }
+        scope.candidates = tuple(
+            {
+                "pdf_path": self.registration(letter).relative_path,
+                "title": self.registration(letter).title,
+                "pdf_sha256": hashlib.sha256(
+                    (self.project_root / self.registration(letter).relative_path).read_bytes()
+                ).hexdigest(),
+            }
+            for letter in letters
+        )
+
+        return scope
+
+    def test_scoped_cli_commits_only_text_storage_and_no_new_retrieval(self) -> None:
+        """CLI совместно записывает тексты и точечные основания без новых загрузок."""
+
+        input_path = self.prepare_input(("a", "b"))
+        scope = self.scoped_approval(input_path, ("a", "b"))
+        parent_artifacts = self.store.records("artifacts")
+
+        def attach_storage(plan: ManifestPlan, **context: Any) -> ManifestPlan:
+            """Вернуть синтетическое право; настоящий загрузчик проверяется отдельно."""
+
+            artifact = plan.artifacts[0]
+            self.assertEqual(artifact["rights_record_ids"], [])
+            right = self.right("storage")
+            right["created_at"] = context["at"]
+            right["rights_checked_at"] = context["at"][:10]
+            right["scope_type"] = "artifact"
+            right["scope_id"] = artifact["artifact_record_id"]
+            right["rights_record_id"] = f"right-text:{artifact['sha256']}"
+            artifact["rights_record_ids"] = [right["rights_record_id"]]
+            plan.rights.append(right)
+
+            return plan
+
+        def extractor(pdf_path: Path, **options: Any) -> tuple[str, str, bool]:
+            """Вернуть различимые тексты без сети и запуска OCR."""
+
+            return f"Физическая статья из {pdf_path.name}.", "pdf", True
+
+        with (
+            patch(
+                "scripts.rebuild_from_pdf.load_derived_text_approval",
+                return_value=scope,
+            ),
+            patch(
+                "scripts.rebuild_from_pdf.attach_derived_storage",
+                side_effect=attach_storage,
+            ),
+            patch("sys.stdout", new=io.StringIO()),
+        ):
+            result = run_extraction(
+                [str(input_path), "--derived-storage-approval", "approval.json"],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(scope.validate_parent.call_count, 4)
+        self.assertEqual(len(self.store.records("retrieval_events")), 2)
+        artifacts = self.store.records("artifacts")
+        self.assertEqual(
+            [item for item in artifacts if not item["parent_artifact_id"]],
+            parent_artifacts,
+        )
+        children = [item for item in artifacts if item["parent_artifact_id"]]
+        self.assertEqual(len(children), 2)
+
+        for artifact in children:
+            decisions = [
+                decision for decision in self.store.records("operation_decisions")
+                if decision["subject_id"] == artifact["artifact_record_id"]
+            ]
+            self.assertEqual(
+                {decision["operation"] for decision in decisions}, {"storage"},
+            )
+
+        self.assertTrue(self.store.audit().ok)
+
+    def test_scoped_preflight_rejects_whole_selection_before_extraction(self) -> None:
+        """Ошибка второго PDF не должна позволить извлечь даже первый текст."""
+
+        input_path = self.prepare_input(("a", "b"))
+        scope = self.scoped_approval(input_path, ("a", "b"))
+        scope.validate_parent.side_effect = [None, ValueError("PDF вне партии")]
+        before = self.store.snapshot_hashes()
+        extractor = MagicMock()
+
+        with (
+            patch(
+                "scripts.rebuild_from_pdf.load_derived_text_approval",
+                return_value=scope,
+            ),
+            self.assertRaisesRegex(ValueError, "вне партии"),
+        ):
+            run_extraction(
+                [str(input_path), "--derived-storage-approval", "approval.json"],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        extractor.assert_not_called()
+        self.assertEqual(self.store.snapshot_hashes(), before)
+
+    def test_scoped_cli_rejects_another_input_file(self) -> None:
+        """Согласование нельзя приложить к произвольному списку PDF."""
+
+        input_path = self.prepare_input(("a",))
+        scope = self.scoped_approval(input_path, ("a",))
+        extractor = MagicMock()
+
+        with (
+            patch(
+                "scripts.rebuild_from_pdf.load_derived_text_approval",
+                return_value=scope,
+            ),
+            self.assertRaisesRegex(ValueError, "списком PDF из согласованной партии"),
+        ):
+            run_extraction(
+                ["other.jsonl", "--derived-storage-approval", "approval.json"],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        extractor.assert_not_called()
+
+    def test_scoped_cli_does_not_export_extra_page_files(self) -> None:
+        """Основание одного TXT не распространяется на постраничные копии."""
+
+        extractor = MagicMock()
+        page_exporter = MagicMock()
+
+        with self.assertRaisesRegex(ValueError, "не включает --export-pages"):
+            run_extraction(
+                [
+                    "candidates.jsonl", "--derived-storage-approval",
+                    "approval.json", "--export-pages",
+                ],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+                page_exporter=page_exporter,
+            )
+
+        extractor.assert_not_called()
+        page_exporter.assert_not_called()
+        self.assertFalse((self.project_root / "data" / "extracted").exists())
+        self.assertFalse((self.project_root / "data" / "qa").exists())
+
+    def test_sha256_selection_keeps_scope_and_original_order(self) -> None:
+        """Выбор по хешу сохраняет порядок партии и не изменяет её исходный список."""
+
+        input_path = self.prepare_input(("a", "b", "c"))
+        original_input = input_path.read_bytes()
+        scope = self.scoped_approval(input_path, ("a", "b", "c"))
+        before = self.store.snapshot_hashes()
+        extractor = MagicMock(return_value=("", "pdf_unreadable", False))
+
+        with (
+            patch("scripts.rebuild_from_pdf.load_derived_text_approval", return_value=scope),
+            patch("sys.stdout", new=io.StringIO()),
+        ):
+            result = run_extraction(
+                [
+                    str(input_path), "--derived-storage-approval", "approval.json",
+                    "--pdf-sha256", scope.candidates[2]["pdf_sha256"].upper(),
+                    "--pdf-sha256", scope.candidates[0]["pdf_sha256"], "--no-ocr",
+                ],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [call.args[0].name for call in extractor.call_args_list],
+            ["r241a.pdf", "r241c.pdf"],
+        )
+        self.assertEqual(scope.validate_parent.call_count, 4)
+        self.assertEqual(input_path.read_bytes(), original_input)
+        self.assertEqual(self.store.snapshot_hashes(), before)
+        report_path = (
+            self.manifest_dir / "results"
+            / f"manual_{DEFAULT_EXTRACTION_VERSION}_extraction.jsonl"
+        )
+        reports = [
+            json.loads(line)
+            for line in report_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(
+            [Path(record["relative_path"]).name for record in reports],
+            ["r241a.pdf", "r241c.pdf"],
+        )
+
+    def test_sha256_selection_is_applied_before_limit(self) -> None:
+        """Лимит применяется к выбранным PDF, а не отсекает их в исходной партии."""
+
+        input_path = self.prepare_input(("a", "b", "c"))
+        scope = self.scoped_approval(input_path, ("a", "b", "c"))
+        extractor = MagicMock(return_value=("", "pdf_unreadable", False))
+
+        with (
+            patch("scripts.rebuild_from_pdf.load_derived_text_approval", return_value=scope),
+            patch("sys.stdout", new=io.StringIO()),
+        ):
+            result = run_extraction(
+                [
+                    str(input_path), "--derived-storage-approval", "approval.json",
+                    "--pdf-sha256", scope.candidates[2]["pdf_sha256"],
+                    "--pdf-sha256", scope.candidates[1]["pdf_sha256"],
+                    "--limit", "1", "--no-ocr", "--dry-run",
+                ],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        self.assertEqual(result, 0)
+        extractor.assert_called_once()
+        self.assertEqual(extractor.call_args.args[0].name, "r241b.pdf")
+        self.assertEqual(scope.validate_parent.call_count, 2)
+        self.assertFalse((self.manifest_dir / "results").exists())
+
+    def test_unknown_or_duplicate_sha256_is_rejected_before_preflight(self) -> None:
+        """Ошибка выбора всей партии выявляется до лимита, OCR и любой записи."""
+
+        input_path = self.prepare_input(("a", "b"))
+        scope = self.scoped_approval(input_path, ("a", "b"))
+        before = self.store.snapshot_hashes()
+        extractor = MagicMock()
+        valid_digest = scope.candidates[0]["pdf_sha256"]
+
+        for other_digest, message in (
+            ("f" * 64, "отсутствует"), (valid_digest.upper(), "Повторный"),
+        ):
+            with (
+                self.subTest(digest=other_digest),
+                patch("scripts.rebuild_from_pdf.load_derived_text_approval", return_value=scope),
+                patch("scripts.rebuild_from_pdf.find_registered_pdf_artifact") as find_parent,
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                run_extraction(
+                    [
+                        str(input_path), "--derived-storage-approval", "approval.json",
+                        "--pdf-sha256", valid_digest, "--pdf-sha256", other_digest,
+                        "--limit", "1",
+                    ],
+                    project_root=self.project_root,
+                    schema_dir=self.schema_dir,
+                    extractor=extractor,
+                )
+
+            find_parent.assert_not_called()
+
+        scope.validate_parent.assert_not_called()
+        extractor.assert_not_called()
+        self.assertEqual(self.store.snapshot_hashes(), before)
+        self.assertFalse((self.project_root / "data" / "extracted").exists())
+        self.assertFalse((self.manifest_dir / "results").exists())
+
+    def test_sha256_requires_approval_before_reading_input(self) -> None:
+        """Произвольный локальный список нельзя выдать за согласованную партию."""
+
+        extractor = MagicMock()
+
+        with self.assertRaisesRegex(ValueError, "требует --derived-storage-approval"):
+            run_extraction(
+                ["missing.jsonl", "--pdf-sha256", "a" * 64],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        extractor.assert_not_called()
+        self.assertFalse((self.manifest_dir / "results").exists())
+
+    def test_invalid_sha256_is_rejected_before_reading_input(self) -> None:
+        """CLI требует полный шестнадцатеричный хеш без пробелов и сокращений."""
+
+        extractor = MagicMock()
+
+        for digest in ("", "a" * 63, "a" * 65, "g" * 64, " " + "a" * 64):
+            with (
+                self.subTest(digest=digest),
+                patch("sys.stderr", new=io.StringIO()),
+                self.assertRaises(SystemExit) as exit_context,
+            ):
+                run_extraction(
+                    ["missing.jsonl", "--pdf-sha256", digest],
+                    project_root=self.project_root,
+                    schema_dir=self.schema_dir,
+                    extractor=extractor,
+                )
+
+            self.assertEqual(exit_context.exception.code, 2)
+
+        extractor.assert_not_called()
+
+    def test_real_scoped_approval_dry_run_and_repeat(self) -> None:
+        """Настоящее согласование проходит всю CLI-цепочку без повторного расширения прав."""
+
+        fixture = derived_rights_tests.DerivedTextRightsTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        before = fixture.store.snapshot_hashes()
+        approval_before = fixture.approval_path.read_bytes()
+        candidates_path = fixture.package / "candidates.jsonl"
+        candidates_before = candidates_path.read_bytes()
+        candidate = json.loads(candidates_before.decode("utf-8"))
+        extractor = MagicMock(
+            return_value=("Русский физический текст о квантовой плазме.", "pdf", True),
+        )
+        arguments = [
+            str(fixture.package / "candidates.jsonl"),
+            "--derived-storage-approval", str(fixture.approval_path),
+            "--extraction-version", "scoped-cli-test-v1",
+            "--pdf-sha256", candidate["pdf_sha256"],
+        ]
+
+        with patch("sys.stdout", new=io.StringIO()):
+            result = run_extraction(
+                [*arguments, "--dry-run"],
+                project_root=fixture.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(fixture.store.snapshot_hashes(), before)
+        self.assertFalse((fixture.project_root / "data" / "extracted").exists())
+        self.assertFalse((fixture.project_root / "manifests" / "results").exists())
+
+        with patch("sys.stdout", new=io.StringIO()):
+            result = run_extraction(
+                arguments,
+                project_root=fixture.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        self.assertEqual(result, 0)
+        registered = fixture.store.snapshot_hashes()
+
+        with patch("sys.stdout", new=io.StringIO()):
+            result = run_extraction(
+                arguments,
+                project_root=fixture.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(fixture.store.snapshot_hashes(), registered)
+        self.assertEqual(len(fixture.store.records("rights")), 3)
+        self.assertEqual(len(fixture.store.records("retrieval_events")), 1)
+        self.assertEqual(len(fixture.store.records("condition_fulfilments")), 2)
+        self.assertEqual(fixture.approval_path.read_bytes(), approval_before)
+        self.assertEqual(candidates_path.read_bytes(), candidates_before)
+        self.assertTrue(fixture.store.audit().ok)
 
     def test_registered_pdfs_create_child_artifacts_and_report(self) -> None:
         """Две карточки должны создать два текста без новых событий загрузки."""
@@ -391,6 +766,204 @@ class RebuildFromPdfTests(unittest.TestCase):
         self.assertIsNone(report["ocr_method"])
         self.assertIsNone(report["ocr_version"])
         version_resolver.assert_not_called()
+
+    def test_explicit_header_boundary_reaches_extractor_and_report(self) -> None:
+        """Координата передаётся извлечению и сохраняется в отдельной версии результата."""
+
+        input_path = self.prepare_input(("a",))
+        extractor = MagicMock(
+            return_value=("Распознанный физический текст.", "pdf_ocr_layout", True),
+        )
+        expected_version = pdf_extraction_version("ufn", first_page_split_y=330)
+
+        with patch("sys.stdout", new=io.StringIO()):
+            result = run_extraction(
+                [str(input_path), "--first-page-split-y", "330.0"],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+                ocr_version_resolver=MagicMock(return_value="5.5.3"),
+            )
+
+        self.assertEqual(result, 0)
+        extractor.assert_called_once_with(
+            self.project_root.resolve() / self.registration("a").relative_path,
+            text_dir=None,
+            try_ocr=True,
+            ocr_layout="ufn",
+            first_page_split_y=330.0,
+        )
+        report_path = self.manifest_dir / "results" / f"manual_{expected_version}_extraction.jsonl"
+        record = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["first_page_split_y"], 330.0)
+        self.assertEqual(record["extraction_version"], expected_version)
+        self.assertEqual(record["status"], "registered")
+        self.assertNotEqual(expected_version, DEFAULT_EXTRACTION_VERSION)
+        children = [
+            artifact for artifact in self.store.records("artifacts")
+            if artifact["parent_artifact_id"]
+        ]
+        child = children[0]
+        self.assertEqual(child["extraction_version"], expected_version)
+        self.assertTrue(self.store.audit().ok)
+
+    def test_custom_versions_keep_distinct_header_boundaries(self) -> None:
+        """Разные ручные границы не перезаписывают тексты и отчёты собственной версии."""
+
+        input_path = self.prepare_input(("a",))
+        previous_files: dict[Path, bytes] = {}
+
+        for boundary in (330, 330.5):
+            with self.subTest(boundary=boundary), patch("sys.stdout", new=io.StringIO()):
+                result = run_extraction(
+                    [
+                        str(input_path), "--first-page-split-y", str(boundary),
+                        "--extraction-version", "checked-layout-v1",
+                    ],
+                    project_root=self.project_root,
+                    schema_dir=self.schema_dir,
+                    extractor=MagicMock(
+                        return_value=(
+                            f"Русский текст с границей {boundary}.", "pdf_ocr_layout", True,
+                        ),
+                    ),
+                    ocr_version_resolver=MagicMock(return_value="5.5.3"),
+                )
+
+                self.assertEqual(result, 0)
+                version = f"checked-layout-v1-header-{boundary}pt"
+                report_path = self.manifest_dir / "results" / f"manual_{version}_extraction.jsonl"
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertEqual(report["first_page_split_y"], boundary)
+                self.assertEqual(report["extraction_version"], version)
+                text_path = self.project_root / report["artifact_path"]
+
+                for previous_path, previous_content in previous_files.items():
+                    self.assertEqual(previous_path.read_bytes(), previous_content)
+
+                previous_files[report_path] = report_path.read_bytes()
+                previous_files[text_path] = text_path.read_bytes()
+
+        self.assertEqual(len(self.store.records("artifacts")), 3)
+        self.assertTrue(self.store.audit().ok)
+
+    def test_boundary_is_preserved_in_unreadable_and_failed_reports(self) -> None:
+        """Неудачный OCR тоже сохраняет выбранную ручную границу в отчёте."""
+
+        input_path = self.prepare_input(("a",))
+        before = self.store.snapshot_hashes()
+
+        for status, result in (
+            ("not_registered_unreadable", ("???", "pdf_unreadable", False)),
+            ("failed", RuntimeError("Синтетическая ошибка OCR")),
+        ):
+            extractor = MagicMock()
+
+            if isinstance(result, Exception):
+                extractor.side_effect = result
+
+            else:
+                extractor.return_value = result
+
+            report_path = self.manifest_dir / "results" / f"{status}.jsonl"
+
+            with (
+                self.subTest(status=status),
+                patch("sys.stdout", new=io.StringIO()),
+                patch("sys.stderr", new=io.StringIO()),
+            ):
+                run_extraction(
+                    [
+                        str(input_path), "--first-page-split-y", "330",
+                        "--report", str(report_path),
+                    ],
+                    project_root=self.project_root,
+                    schema_dir=self.schema_dir,
+                    extractor=extractor,
+                    ocr_version_resolver=MagicMock(return_value="5.5.3"),
+                )
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], status)
+            self.assertEqual(report["first_page_split_y"], 330.0)
+
+        self.assertEqual(self.store.snapshot_hashes(), before)
+
+    def test_invalid_boundary_is_rejected_before_reading_input(self) -> None:
+        """Нулевая, отрицательная и бесконечная границы не доходят до OCR."""
+
+        extractor = MagicMock()
+
+        for boundary in ("0", "-1", "nan", "inf", "1e999", "word"):
+            with (
+                self.subTest(boundary=boundary),
+                patch("sys.stderr", new=io.StringIO()),
+                self.assertRaises(SystemExit) as exit_context,
+            ):
+                run_extraction(
+                    ["missing.jsonl", "--first-page-split-y", boundary],
+                    project_root=self.project_root,
+                    schema_dir=self.schema_dir,
+                    extractor=extractor,
+                )
+
+            self.assertEqual(exit_context.exception.code, 2)
+
+        extractor.assert_not_called()
+        self.assertFalse((self.manifest_dir / "results").exists())
+
+    def test_boundary_rejects_incompatible_options_before_reading_input(self) -> None:
+        """Ручная шапка несовместима с другими макетами и отключённым OCR."""
+
+        extractor = MagicMock()
+
+        for options in (
+            ["--no-ocr"], ["--ocr-layout", "single-column"], ["--ocr-layout", "two-column"],
+        ):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                run_extraction(
+                    ["missing.jsonl", "--first-page-split-y", "330", *options],
+                    project_root=self.project_root,
+                    schema_dir=self.schema_dir,
+                    extractor=extractor,
+                )
+
+        extractor.assert_not_called()
+
+    def test_boundary_cannot_reuse_reserved_or_inconsistent_versions(self) -> None:
+        """Версия без нужной границы не может скрыть изменение алгоритма."""
+
+        extractor = MagicMock()
+
+        for version in (
+            DEFAULT_EXTRACTION_VERSION,
+            "pdf-text-rus-eng-single-column-v3",
+            "pdf-text-rus-eng-two-column-v3",
+            "pdf-text-rus-eng-v2-header-331pt",
+            "pdf-text-rus-eng-two-column-v3-header-330pt",
+            "custom-header-331pt",
+        ):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                run_extraction(
+                    [
+                        "missing.jsonl", "--first-page-split-y", "330",
+                        "--extraction-version", version,
+                    ],
+                    project_root=self.project_root,
+                    schema_dir=self.schema_dir,
+                    extractor=extractor,
+                )
+
+        with self.assertRaisesRegex(ValueError, "требует --first-page-split-y"):
+            run_extraction(
+                ["missing.jsonl", "--extraction-version", "pdf-text-rus-eng-v2-header-330pt"],
+                project_root=self.project_root,
+                schema_dir=self.schema_dir,
+                extractor=extractor,
+            )
+
+        extractor.assert_not_called()
+        self.assertFalse((self.manifest_dir / "results").exists())
 
     def test_unknown_cli_layout_is_rejected_before_reading_input(self) -> None:
         """Опечатка в макете должна завершать разбор CLI до чтения файлов."""

@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -15,7 +16,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from urllib.parse import unquote, urlsplit
 
@@ -134,6 +135,27 @@ class PdfPageExportResult:
     pages: tuple[ExportedPdfPage, ...]
 
 
+class _FirstPageSplitOptions(TypedDict, total=False):
+    """Необязательная ручная граница для совместимых вызовов извлечения."""
+
+    first_page_split_y: float
+
+
+class _InvalidFirstPageSplitError(ValueError):
+    """Ошибка ручного макета, которую нельзя подменять нечитаемым PDF-слоем."""
+
+
+def _first_page_split_options(
+    first_page_split_y: float | None,
+) -> _FirstPageSplitOptions:
+    """Передать новую настройку только при её явном выборе."""
+
+    if first_page_split_y is None:
+        return {}
+
+    return {"first_page_split_y": first_page_split_y}
+
+
 def _validate_ocr_layout(ocr_layout: str) -> None:
     """Отклонить неизвестный макет до чтения PDF или запуска OCR."""
 
@@ -144,11 +166,60 @@ def _validate_ocr_layout(ocr_layout: str) -> None:
         )
 
 
-def pdf_extraction_version(ocr_layout: str = DEFAULT_OCR_LAYOUT) -> str:
-    """Вернуть отдельную версию извлечения для выбранного макета OCR."""
+def _validate_first_page_split_y(
+    first_page_split_y: float | None,
+    *,
+    ocr_layout: str,
+    page: fitz.Page | None = None,
+) -> None:
+    """Проверить ручную границу шапки в пунктах от верхнего края страницы."""
 
     _validate_ocr_layout(ocr_layout)
-    return OCR_LAYOUT_VERSIONS[ocr_layout]
+
+    if first_page_split_y is None:
+        return
+
+    if ocr_layout != "ufn":
+        raise _InvalidFirstPageSplitError(
+            "first_page_split_y допускается только для макета ufn"
+        )
+
+    if (
+        isinstance(first_page_split_y, bool)
+        or not math.isfinite(first_page_split_y)
+        or first_page_split_y <= 0
+    ):
+        raise _InvalidFirstPageSplitError(
+            "first_page_split_y должно быть конечным положительным числом"
+        )
+
+    if page is not None and first_page_split_y >= page.rect.height:
+        raise _InvalidFirstPageSplitError(
+            "first_page_split_y должно быть меньше высоты первой страницы"
+        )
+
+
+def _first_page_split_label(first_page_split_y: float) -> str:
+    """Получить устойчивую запись границы без потери дробной точности."""
+
+    value = float(first_page_split_y)
+    return str(int(value)) if value.is_integer() else repr(value)
+
+
+def pdf_extraction_version(
+    ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    *,
+    first_page_split_y: float | None = None,
+) -> str:
+    """Вернуть версию макета OCR с отдельным вариантом ручной границы."""
+
+    _validate_first_page_split_y(first_page_split_y, ocr_layout=ocr_layout)
+    version = OCR_LAYOUT_VERSIONS[ocr_layout]
+
+    if first_page_split_y is not None:
+        version += f"-header-{_first_page_split_label(first_page_split_y)}pt"
+
+    return version
 
 
 def cyrillic_letter_ratio(text: str) -> float:
@@ -334,6 +405,7 @@ def _ocr_columns_in_rect(
     *,
     dpi: int = OCR_DPI,
     lang: str = DEFAULT_OCR_LANGUAGE,
+    keep_short_regions: bool = False,
 ) -> str:
     """Распознать две колонки: сначала левую, затем правую."""
 
@@ -343,7 +415,7 @@ def _ocr_columns_in_rect(
     parts: list[str] = []
 
     for clip in (left, right):
-        if clip.is_empty or clip.height < 20:
+        if clip.is_empty or (clip.height < 20 and not keep_short_regions):
             continue
 
         parts.append(_ocr_page_region(page, clip, dpi=dpi, lang=lang).rstrip())
@@ -468,10 +540,15 @@ def _ocr_page_layout(
     dpi: int = OCR_DPI,
     lang: str = DEFAULT_OCR_LANGUAGE,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> str:
     """Распознать страницу по явному макету или прежним правилам УФН."""
 
-    _validate_ocr_layout(ocr_layout)
+    _validate_first_page_split_y(
+        first_page_split_y,
+        ocr_layout=ocr_layout,
+        page=page if page_index == 0 else None,
+    )
 
     import fitz
 
@@ -483,19 +560,35 @@ def _ocr_page_layout(
     if ocr_layout == "two-column":
         return _ocr_columns_in_rect(page, rectangle, dpi=dpi, lang=lang)
 
-    split_y = _detect_two_column_split_y(page, page_index=page_index)
+    explicit_header = first_page_split_y is not None and page_index == 0
+
+    if explicit_header:
+        split_y = first_page_split_y
+
+    else:
+        split_y = _detect_two_column_split_y(page, page_index=page_index)
 
     if split_y is None:
         return _ocr_columns_in_rect(page, rectangle, dpi=dpi, lang=lang)
 
-    if split_y >= rectangle.height - 20:
+    if not explicit_header and split_y >= rectangle.height - 20:
         return _ocr_page_full(page, clip=rectangle, dpi=dpi, lang=lang)
 
-    top = fitz.Rect(rectangle.x0, rectangle.y0, rectangle.x1, split_y)
-    bottom = fitz.Rect(rectangle.x0, split_y, rectangle.x1, rectangle.y1)
+    boundary_y = rectangle.y0 + split_y if explicit_header else split_y
+    top = fitz.Rect(rectangle.x0, rectangle.y0, rectangle.x1, boundary_y)
+    bottom = fitz.Rect(rectangle.x0, boundary_y, rectangle.x1, rectangle.y1)
 
     t_top = _ocr_page_full(page, clip=top, dpi=dpi, lang=lang).rstrip()
-    t_bottom = _ocr_columns_in_rect(page, bottom, dpi=dpi, lang=lang).rstrip()
+
+    if explicit_header:
+        # Ручная граница точна: короткую нижнюю область нельзя терять
+        # из-за порога, предназначенного для автоматического макета.
+        t_bottom = _ocr_columns_in_rect(
+            page, bottom, dpi=dpi, lang=lang, keep_short_regions=True
+        ).rstrip()
+
+    else:
+        t_bottom = _ocr_columns_in_rect(page, bottom, dpi=dpi, lang=lang).rstrip()
 
     if t_top and t_bottom:
         return f"{t_top}\n\n{t_bottom}"
@@ -664,6 +757,7 @@ def extract_pages_from_pdf_ocr(
     lang: str = DEFAULT_OCR_LANGUAGE,
     dpi: int = OCR_DPI,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> tuple[PdfPageText, ...]:
     """
     Распознать каждую страницу PDF с учётом выбранного макета.
@@ -672,9 +766,11 @@ def extract_pages_from_pdf_ocr(
     а основной текст — как левая и правая колонки. Явные single-column
     и two-column применяются ко всем страницам без определения шапки.
     По умолчанию сохраняются режим УФН и языки rus+eng.
+    Ручная граница first_page_split_y заменяет определение шапки только
+    на первой физической странице и задаётся в пунктах от её верхнего края.
     """
 
-    _validate_ocr_layout(ocr_layout)
+    _validate_first_page_split_y(first_page_split_y, ocr_layout=ocr_layout)
     _require_tesseract()
 
     pages: list[PdfPageText] = []
@@ -689,6 +785,7 @@ def extract_pages_from_pdf_ocr(
                 dpi=dpi,
                 lang=lang,
                 ocr_layout=ocr_layout,
+                **_first_page_split_options(first_page_split_y),
             )
             pages.append(
                 PdfPageText(
@@ -711,10 +808,11 @@ def extract_selected_pages_from_pdf_ocr(
     lang: str = DEFAULT_OCR_LANGUAGE,
     dpi: int = OCR_DPI,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> tuple[PdfPageText, ...]:
     """Распознать только выбранные PDF-страницы с учётом макета."""
 
-    _validate_ocr_layout(ocr_layout)
+    _validate_first_page_split_y(first_page_split_y, ocr_layout=ocr_layout)
 
     if not lang.strip():
         raise ValueError("lang не может быть пустым")
@@ -730,6 +828,14 @@ def extract_selected_pages_from_pdf_ocr(
             page_indices,
             page_count=document.page_count,
         )
+
+        if first_page_split_y is not None:
+            _validate_first_page_split_y(
+                first_page_split_y,
+                ocr_layout=ocr_layout,
+                page=document.load_page(0),
+            )
+
         pages: list[PdfPageText] = []
 
         for page_index in indices:
@@ -740,6 +846,7 @@ def extract_selected_pages_from_pdf_ocr(
                 dpi=dpi,
                 lang=lang,
                 ocr_layout=ocr_layout,
+                **_first_page_split_options(first_page_split_y),
             )
             pages.append(
                 PdfPageText(
@@ -768,11 +875,13 @@ def extract_text_from_pdf_ocr(
     lang: str = DEFAULT_OCR_LANGUAGE,
     dpi: int = OCR_DPI,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> str:
     """Собрать текст всех страниц, распознанных по выбранному макету."""
 
     pages = extract_pages_from_pdf_ocr(
-        path, lang=lang, dpi=dpi, ocr_layout=ocr_layout
+        path, lang=lang, dpi=dpi, ocr_layout=ocr_layout,
+        **_first_page_split_options(first_page_split_y),
     )
     return _combine_page_texts(pages, method="pdf_ocr_layout")
 
@@ -804,10 +913,13 @@ def text_sidecar_path(
     *,
     text_dir: Path,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> Path:
     """Построить путь TXT, отделяя новую версию OCR от прежних файлов."""
 
-    extraction_version = pdf_extraction_version(ocr_layout)
+    extraction_version = pdf_extraction_version(
+        ocr_layout, **_first_page_split_options(first_page_split_y)
+    )
 
     if method == "pdf_ocr_layout":
         text_dir = text_dir / extraction_version
@@ -822,11 +934,13 @@ def save_text_sidecar(
     *,
     text_dir: Path,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> Path:
     """Сохранить извлечённый текст и технический заголовок в UTF-8."""
 
     output_path = text_sidecar_path(
-        pdf_path, method, text_dir=text_dir, ocr_layout=ocr_layout
+        pdf_path, method, text_dir=text_dir, ocr_layout=ocr_layout,
+        **_first_page_split_options(first_page_split_y),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -849,13 +963,22 @@ def save_text_sidecar(
     )
 
     if method == "pdf_ocr_layout":
+        extraction_version = pdf_extraction_version(
+            ocr_layout, **_first_page_split_options(first_page_split_y)
+        )
         header += (
             f"# ocr language: {DEFAULT_OCR_LANGUAGE}\n"
-            f"# extraction version: {pdf_extraction_version(ocr_layout)}\n"
+            f"# extraction version: {extraction_version}\n"
         )
 
         if ocr_layout != DEFAULT_OCR_LAYOUT:
             header += f"# ocr layout: {ocr_layout}\n"
+
+        if first_page_split_y is not None:
+            header += (
+                "# first page header boundary: "
+                f"{_first_page_split_label(first_page_split_y)} pt from top\n"
+            )
 
     output_path.write_text(header + "\n" + text, encoding="utf-8")
     return output_path
@@ -1113,6 +1236,7 @@ def extract_best_text_result(
     text_dir: Path | None = None,
     try_ocr: bool = True,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> PdfTextExtraction:
     """
     Выбрать лучший общий и постраничный текст: PDF-слой, затем OCR.
@@ -1122,7 +1246,7 @@ def extract_best_text_result(
     OCR для одного варианта повторно не запускается.
     """
 
-    _validate_ocr_layout(ocr_layout)
+    _validate_first_page_split_y(first_page_split_y, ocr_layout=ocr_layout)
     raw_pages = extract_pages_from_pdf(pdf_path)
     raw = _combine_page_texts(raw_pages, method="pdf")
 
@@ -1140,7 +1264,8 @@ def extract_best_text_result(
     if try_ocr:
         try:
             ocr_pages = extract_pages_from_pdf_ocr(
-                pdf_path, ocr_layout=ocr_layout
+                pdf_path, ocr_layout=ocr_layout,
+                **_first_page_split_options(first_page_split_y),
             )
             method = "pdf_ocr_layout"
             ocr = _combine_page_texts(ocr_pages, method=method)
@@ -1149,6 +1274,7 @@ def extract_best_text_result(
                 save_text_sidecar(
                     pdf_path, ocr, method, text_dir=text_dir,
                     ocr_layout=ocr_layout,
+                    **_first_page_split_options(first_page_split_y),
                 )
 
             if is_readable_russian(ocr):
@@ -1166,6 +1292,9 @@ def extract_best_text_result(
                     readable=False,
                     pages=ocr_pages,
                 )
+
+        except _InvalidFirstPageSplitError:
+            raise
 
         except (ImportError, OSError, RuntimeError, ValueError) as exception:
             LOGGER.warning("Не удалось распознать %s: %s", pdf_path, exception)
@@ -1187,6 +1316,7 @@ def extract_best_text(
     text_dir: Path | None = None,
     try_ocr: bool = True,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> tuple[str, str, bool]:
     """
     Выбрать лучший текст и вернуть совместимый кортеж результата.
@@ -1200,6 +1330,7 @@ def extract_best_text(
         text_dir=text_dir,
         try_ocr=try_ocr,
         ocr_layout=ocr_layout,
+        **_first_page_split_options(first_page_split_y),
     )
 
     return result.text, result.method, result.readable
@@ -1211,6 +1342,7 @@ def extract_text_from_pdf_checked(
     text_dir: Path | None = None,
     try_ocr: bool = True,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> tuple[str, bool]:
     """Извлечь текст и вернуть только текст и признак читаемости."""
 
@@ -1219,6 +1351,7 @@ def extract_text_from_pdf_checked(
         text_dir=text_dir,
         try_ocr=try_ocr,
         ocr_layout=ocr_layout,
+        **_first_page_split_options(first_page_split_y),
     )
 
     return text, readable
@@ -1282,13 +1415,14 @@ def pdf_to_text(
     text_dir: Path | None = None,
     try_ocr: bool = True,
     ocr_layout: str = DEFAULT_OCR_LAYOUT,
+    first_page_split_y: float | None = None,
 ) -> tuple[str, Path, bool, str]:
     """
     Скачать или взять из кэша PDF и извлечь лучший текст.
     Возвращает ``(текст, путь PDF, читаемость, метод)``.
     """
 
-    _validate_ocr_layout(ocr_layout)
+    _validate_first_page_split_y(first_page_split_y, ocr_layout=ocr_layout)
     local = _cache_path(pdf_url, cache_dir)
     used_cache = reuse_cached and _is_valid_cached_pdf(local)
 
@@ -1305,7 +1439,11 @@ def pdf_to_text(
             text_dir=text_dir,
             try_ocr=try_ocr,
             ocr_layout=ocr_layout,
+            **_first_page_split_options(first_page_split_y),
         )
+
+    except _InvalidFirstPageSplitError:
+        raise
 
     except (OSError, RuntimeError, ValueError):
         if not used_cache:
@@ -1320,6 +1458,7 @@ def pdf_to_text(
             text_dir=text_dir,
             try_ocr=try_ocr,
             ocr_layout=ocr_layout,
+            **_first_page_split_options(first_page_split_y),
         )
 
     if not _source_url_path(local).exists():

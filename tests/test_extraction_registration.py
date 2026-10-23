@@ -198,8 +198,33 @@ class ExtractedTextRegistrationTests(unittest.TestCase):
         self.assertEqual(artifact["representation"], "ocr_text")
         self.assertEqual(artifact["ocr_method"], "tesseract")
         self.assertEqual(artifact["ocr_version"], "5.5.3")
-
         self.store.preflight([plan])
+
+    def test_explicit_text_rights_do_not_inherit_parent_rights(self) -> None:
+        """Точечное основание TXT не дополняется неприменимыми правами PDF."""
+
+        for rights in ((), ("right-text-storage",)):
+            with self.subTest(rights=rights):
+                plan = plan_extracted_text(
+                    self.parent_artifact,
+                    "Текст физической статьи.",
+                    extraction_method="pdf",
+                    extraction_version="scoped-text-v1",
+                    extracted_at=EXTRACTED_AT,
+                    rights_record_ids=rights,
+                )
+
+                self.assertEqual(plan.artifacts[0]["rights_record_ids"], list(rights))
+                self.assertEqual(plan.retrieval_events, [])
+                self.assertEqual(
+                    plan.artifacts[0]["retrievals"],
+                    self.parent_artifact["retrievals"],
+                )
+
+        self.assertEqual(
+            self.parent_artifact["rights_record_ids"],
+            ["right-acquisition", "right-storage"],
+        )
 
     def test_unretrieved_parent_is_rejected(self) -> None:
         """Наличие байтов само по себе не заменяет состоявшееся получение PDF."""
@@ -217,6 +242,23 @@ class ExtractedTextRegistrationTests(unittest.TestCase):
                         extraction_version="scoped-text-v1",
                         extracted_at=EXTRACTED_AT,
                     )
+
+    def test_invalid_explicit_right_ids_are_rejected(self) -> None:
+        """Пустое имя права и строка вместо списка не принимаются молча."""
+
+        for rights in ("right-storage", ("",)):
+            with (
+                self.subTest(rights=rights),
+                self.assertRaisesRegex(ValueError, "rights_record_ids"),
+            ):
+                plan_extracted_text(
+                    self.parent_artifact,
+                    "Текст физической статьи.",
+                    extraction_method="pdf",
+                    extraction_version="scoped-text-v1",
+                    extracted_at=EXTRACTED_AT,
+                    rights_record_ids=rights,
+                )
 
     def test_repeated_plan_reuses_compatible_artifact(self) -> None:
         """Повторное извлечение тех же байтов не должно создавать ревизию."""

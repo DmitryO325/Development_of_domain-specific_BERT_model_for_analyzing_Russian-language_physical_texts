@@ -84,10 +84,29 @@ def plan_extracted_text(
     extracted_at: str,
     existing_artifacts: Iterable[dict[str, Any]] = (),
     ocr_version: str | None = None,
+    rights_record_ids: Iterable[str] | None = None,
 ) -> ManifestPlan:
-    """Построить план дочернего текстового артефакта без нового получения."""
+    """
+    Построить план дочернего текста без нового события получения.
+
+    Явный список прав заменяет наследование оснований родителя в новом
+    плане. Пустой список позволяет добавить точечное основание хранения
+    после вычисления SHA-256. Применимость прав проверяет ManifestStore.
+    """
 
     _validate_parent_artifact(parent_artifact)
+
+    if isinstance(rights_record_ids, str):
+        raise ValueError("rights_record_ids должен быть списком, а не строкой")
+
+    text_rights = list(dict.fromkeys(
+        _required_string(right_id, field_name="rights_record_ids")
+        for right_id in (
+            parent_artifact["rights_record_ids"]
+            if rights_record_ids is None
+            else rights_record_ids
+        )
+    ))
 
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Извлечённый текст должен быть непустой строкой")
@@ -142,6 +161,7 @@ def plan_extracted_text(
         extraction_version=version,
         ocr_version=normalized_ocr_version,
         timestamp=timestamp,
+        rights_record_ids=text_rights,
     )
     known_artifacts = [
         copy.deepcopy(candidate)
@@ -166,8 +186,7 @@ def plan_extracted_text(
 
         if updated:
             update_reasons[artifact["artifact_record_id"]] = (
-                "Добавлены новые события получения и применимые записи прав "
-                "родительского PDF."
+                "Обновлены ссылки на происхождение текста и его основания прав."
             )
 
     return ManifestPlan(
@@ -275,6 +294,7 @@ def _build_text_artifact(
     extraction_version: str,
     ocr_version: str | None,
     timestamp: str,
+    rights_record_ids: list[str],
 ) -> dict[str, Any]:
     """Собрать запись производного текста с происхождением от PDF."""
 
@@ -288,7 +308,7 @@ def _build_text_artifact(
         "work_id": parent_artifact["work_id"],
         "parent_artifact_id": parent_artifact["artifact_id"],
         "retrievals": copy.deepcopy(parent_artifact["retrievals"]),
-        "rights_record_ids": list(parent_artifact["rights_record_ids"]),
+        "rights_record_ids": rights_record_ids,
         "content_role": parent_artifact["content_role"],
         "representation": "ocr_text" if is_ocr else "plain_text",
         "mime_type": "text/plain; charset=utf-8",
